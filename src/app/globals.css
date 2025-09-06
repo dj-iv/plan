@@ -2,6 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
+/* --- Debug isolation additions --- */
+#app-root { position:relative; z-index:2147483647; }
+body { overflow:auto; }
+/* Temporarily hide any unexpected direct fullscreen SVG or canvas until we identify source */
+body > svg, body > canvas { display:none !important; }
+/* Make any other top-level divs (except our app) visually bounded for diagnostics */
+body > div:not(#app-root):not(.nextjs-portal) { outline:1px dashed rgba(255,0,0,0.15); }
+/* Provide a contrasting background to verify coverage */
+html, body { background:#f5f7fa; }
+
+/* Neutralize any pseudo-element overlays or background images injected on root */
+html, body {
+  background-image: none !important;
+}
+html::before, html::after, body::before, body::after {
+  content: none !important;
+  display: none !important;
+}
+/* Ensure no default margins let backgrounds peek through */
+body { margin: 0; }
+
+/* Block common desktop extension overlays (e.g., Grammarly) that inject full-screen UIs */
+grammarly-desktop-integration,
+#grammarly-desktop-integration,
+grammarly-extension {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/* Do not globally hide body children; only target known overlays */
+
 :root {
   --background: #ffffff;
   --foreground: #171717;

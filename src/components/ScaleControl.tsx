@@ -6,92 +6,69 @@ interface ScaleControlProps {
   onScaleSet: (scale: number, unit: string) => void;
   currentScale: number | null;
   currentUnit: string;
+  onRequestCalibrate?: () => void;
 }
 
-export default function ScaleControl({ onScaleSet, currentScale, currentUnit }: ScaleControlProps) {
-  const [isManualMode, setIsManualMode] = useState(false);
-  const [referenceLength, setReferenceLength] = useState('');
-  const [unit, setUnit] = useState('meters');
+export default function ScaleControl({ onScaleSet, currentScale, currentUnit, onRequestCalibrate }: ScaleControlProps) {
+  const [unit] = useState('meters');
 
   const handleAutoDetect = async () => {
     // TODO: Implement AI scale detection
     alert('AI scale detection will be implemented here');
   };
 
-  const handleManualScale = () => {
-    if (!referenceLength || isNaN(parseFloat(referenceLength))) {
-      alert('Please enter a valid reference length');
-      return;
-    }
-    
-    const scale = parseFloat(referenceLength);
-    onScaleSet(scale, unit);
-    alert(`Scale set: 1 pixel = ${scale} ${unit}`);
-  };
+  // Manual numeric entry removed; prefer Calibrate on canvas
 
   return (
     <div className="space-y-4">
-      <div className="flex space-x-2">
+      {currentScale ? (
+        <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+          <div className="flex items-center space-x-2">
+            <div className="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center">
+              <svg width="12" height="12" className="text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-green-800">Scale Configured</p>
+              <p className="text-xs text-green-600">1 pixel = {currentScale} {currentUnit}</p>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
+          <div className="flex items-center space-x-2">
+            <div className="w-6 h-6 bg-amber-500 rounded-full flex items-center justify-center">
+              <svg width="12" height="12" className="text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-amber-800">Scale Required</p>
+              <p className="text-xs text-amber-600">Set scale for accurate measurements</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+          <div className="grid grid-cols-2 gap-3">
         <button
           onClick={handleAutoDetect}
-          className="flex-1 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors"
+          className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:from-blue-600 hover:to-blue-700 transition-all transform hover:scale-105 shadow-sm"
         >
-          Auto Detect Scale
+          Auto Detect
         </button>
-        <button
-          onClick={() => setIsManualMode(!isManualMode)}
-          className={`flex-1 px-4 py-2 rounded transition-colors ${
-            isManualMode 
-              ? 'bg-gray-500 text-white hover:bg-gray-600' 
-              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-          }`}
-        >
-          Manual Scale
-        </button>
+            <button
+              onClick={() => onRequestCalibrate && onRequestCalibrate()}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all transform hover:scale-105 shadow-sm bg-white text-gray-700 border border-gray-300 hover:bg-gray-50`}
+            >
+              Start Calibrate
+            </button>
       </div>
 
-      {isManualMode && (
-        <div className="space-y-3 p-4 bg-gray-50 rounded border">
-          <p className="text-sm text-gray-600">
-            1. Draw a line on a known distance in the floorplan
-            2. Enter the real-world length below
+          <p className="text-xs text-gray-500">
+            Tip: Prefer Calibrate — click two points of a known distance on the plan to set scale automatically.
           </p>
-          
-          <div className="flex space-x-2">
-            <input
-              type="number"
-              placeholder="Length"
-              value={referenceLength}
-              onChange={(e) => setReferenceLength(e.target.value)}
-              className="flex-1 px-3 py-2 border rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            />
-            <select
-              value={unit}
-              onChange={(e) => setUnit(e.target.value)}
-              className="px-3 py-2 border rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="meters">meters</option>
-              <option value="feet">feet</option>
-              <option value="centimeters">cm</option>
-            </select>
-          </div>
-          
-          <button
-            onClick={handleManualScale}
-            className="w-full bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 transition-colors"
-          >
-            Set Scale
-          </button>
-        </div>
-      )}
-
-      {currentScale && (
-        <div className="p-3 bg-blue-50 rounded border border-blue-200">
-          <p className="text-sm text-blue-800">
-            ✓ Scale set: 1 pixel = {currentScale} {currentUnit}
-          </p>
-        </div>
-      )}
     </div>
   );
 }

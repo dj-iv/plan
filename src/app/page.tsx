@@ -2,96 +2,96 @@
 
 import { useState, useCallback } from 'react';
 import FileUpload from '@/components/FileUpload';
-import FloorplanCanvas from '@/components/FloorplanCanvas';
 import ScaleControl from '@/components/ScaleControl';
+import FloorplanCanvas from '@/components/FloorplanCanvas';
 
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [imageUrl, setImageUrl] = useState<string>('');
+  const [imageUrl, setImageUrl] = useState<string>("");
+  const [ocrMessage, setOcrMessage] = useState<string | null>(null);
   const [scale, setScale] = useState<number | null>(null);
-  const [scaleUnit, setScaleUnit] = useState<string>('meters');
+  const [unit, setUnit] = useState<string>('meters');
+  const [calibrateTick, setCalibrateTick] = useState<number>(0);
+  const [fullscreenTick, setFullscreenTick] = useState<number>(0);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
-  const handleFileUpload = useCallback((file: File) => {
+  const handleFileUpload = useCallback((file: File, previewUrl?: string) => {
     setUploadedFile(file);
-    const url = URL.createObjectURL(file);
-    setImageUrl(url);
+    setImageUrl(previewUrl || (file ? URL.createObjectURL(file) : ''));
+    setOcrMessage(null);
+    // Nudge fullscreen after upload
+    setFullscreenTick(t => t + 1);
   }, []);
 
-  const handleScaleSet = useCallback((newScale: number, unit: string) => {
-    setScale(newScale);
-    setScaleUnit(unit);
+  const handleOcrScaleGuess = useCallback((guess: { rawText: string; extractedScale?: number; unit?: string }) => {
+    if (guess.extractedScale) {
+      setOcrMessage(`Possible scale detected (beta): 1px ≈ ${guess.extractedScale.toFixed(4)} ${guess.unit || ''}`);
+    } else {
+      setOcrMessage('No clear scale detected automatically. You can set it manually.');
+    }
   }, []);
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
-      <div className="max-w-7xl mx-auto px-4">
-        <header className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">
-            Floorplan Analyzer
-          </h1>
-          <p className="text-gray-600">
-            Upload floorplans, detect scales, and calculate areas with AI assistance
-          </p>
+    <main style={{ position:'relative', minHeight:'100vh', background:'#ffffff' }}>
+      <div style={{ maxWidth:960, margin:'0 auto', padding:'32px 16px', fontFamily:'ui-sans-serif, system-ui, -apple-system' }}>
+        <header style={{ marginBottom:24 }}>
+          <h1 style={{ fontSize:28, fontWeight:700, color:'#111827', margin:0 }}>Floorplan Analyzer</h1>
+          <p style={{ color:'#6b7280', marginTop:8 }}>Step 1: Upload a floorplan (image or PDF). Then set scale and measure areas.</p>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* File Upload */}
-          <div className="lg:col-span-1">
-            <div className="bg-white rounded-lg shadow-sm border p-6">
-              <h2 className="text-lg font-semibold mb-4">Upload Floorplan</h2>
-              <FileUpload onFileUpload={handleFileUpload} />
-              
-              {uploadedFile && (
-                <div className="mt-4 p-3 bg-green-50 rounded border border-green-200">
-                  <p className="text-sm text-green-800">
-                    ✓ {uploadedFile.name}
-                  </p>
-                  <p className="text-xs text-green-600">
-                    {(uploadedFile.size / 1024 / 1024).toFixed(1)} MB
-                  </p>
-                </div>
-              )}
+        {/* Upload */}
+        <section style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, overflow:'hidden' }}>
+          <div style={{ background:'linear-gradient(90deg,#3b82f6,#f97316)', color:'#fff', padding:'10px 14px', fontWeight:600 }}>Upload</div>
+          <div style={{ padding:16 }}>
+            <FileUpload onFileUpload={handleFileUpload} onPdfImageReady={(d)=> setImageUrl(d)} onOcrScaleGuess={handleOcrScaleGuess} />
+            {uploadedFile && (
+              <div style={{ marginTop:12, fontSize:12, color:'#065f46', background:'#ecfdf5', border:'1px solid #a7f3d0', padding:'8px 10px', borderRadius:8 }}>
+                {uploadedFile.name} • {(uploadedFile.size/1024/1024).toFixed(1)} MB
+              </div>
+            )}
+            {/* Info note for PDFs if processing fails */}
+            <div style={{ marginTop:8, fontSize:12, color:'#92400e', background:'#fffbeb', border:'1px solid #fcd34d', padding:'8px 10px', borderRadius:8 }}>
+              Tip: If a PDF fails to render, export the first page as an image (PNG/JPG) and upload it.
             </div>
-
-            {/* Scale Control */}
-            {imageUrl && (
-              <div className="bg-white rounded-lg shadow-sm border p-6 mt-6">
-                <h2 className="text-lg font-semibold mb-4">Scale Settings</h2>
-                <ScaleControl 
-                  onScaleSet={handleScaleSet}
-                  currentScale={scale}
-                  currentUnit={scaleUnit}
-                />
+            {ocrMessage && (
+              <div style={{ marginTop:12, fontSize:12, color:'#1e40af', background:'#eff6ff', border:'1px solid #bfdbfe', padding:'8px 10px', borderRadius:8 }}>
+                {ocrMessage}
               </div>
             )}
           </div>
+        </section>
 
-          {/* Main Canvas Area */}
-          <div className="lg:col-span-3">
-            <div className="bg-white rounded-lg shadow-sm border">
-              {imageUrl ? (
-                <FloorplanCanvas 
-                  imageUrl={imageUrl}
-                  scale={scale}
-                  scaleUnit={scaleUnit}
-                />
-              ) : (
-                <div className="flex items-center justify-center h-96 text-gray-500">
-                  <div className="text-center">
-                    <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center">
-                      <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                      </svg>
-                    </div>
-                    <p className="text-lg">Upload a floorplan to get started</p>
-                    <p className="text-sm">Supports PDF, JPG, PNG files</p>
-                  </div>
-                </div>
-              )}
-            </div>
+        {/* Scale */}
+        <section style={{ marginTop:24, background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, overflow:'hidden' }}>
+          <div style={{ background:'#f3f4f6', padding:'10px 14px', fontWeight:600, color:'#111827' }}>Scale</div>
+          <div style={{ padding:16 }}>
+            <ScaleControl
+              currentScale={scale}
+              currentUnit={unit}
+              onScaleSet={(s,u)=>{ setScale(s); setUnit(u); }}
+              onRequestCalibrate={() => setCalibrateTick(t => t + 1)}
+            />
           </div>
-        </div>
+        </section>
+
+        {/* Preview / Canvas */}
+        {imageUrl && (
+          <section style={{ marginTop:24, background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, overflow:'hidden' }}>
+            <div style={{ background:'#f3f4f6', padding:'10px 14px', fontWeight:600, color:'#111827' }}>Measure</div>
+            <div style={{ padding:16 }}>
+              <FloorplanCanvas 
+                imageUrl={imageUrl} 
+                scale={scale} 
+                scaleUnit={unit}
+                onCalibrate={(s,u)=>{ setScale(s); setUnit(u); }}
+                requestCalibrateToken={calibrateTick}
+                requestFullscreenToken={fullscreenTick}
+                onFullscreenChange={(fs)=> setIsFullscreen(fs)}
+              />
+            </div>
+          </section>
+        )}
       </div>
-    </div>
+    </main>
   );
 }
