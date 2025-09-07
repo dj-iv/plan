@@ -1,7 +1,6 @@
 // Lightweight OpenCV.js loader and a trim function to crop the plan frame.
 // Uses global `cv` from OpenCV.js; we load it lazily from CDN.
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 declare const cv: any;
 
