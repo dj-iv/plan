@@ -9,6 +9,7 @@ export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [imageUrl, setImageUrl] = useState<string>("");
   const [ocrMessage, setOcrMessage] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [scale, setScale] = useState<number | null>(null);
   const [unit, setUnit] = useState<string>('meters');
   const [calibrateTick, setCalibrateTick] = useState<number>(0);
@@ -75,6 +76,11 @@ export default function Home() {
         </section>
 
         {/* Preview / Canvas */}
+        {infoMessage && (
+          <div style={{ marginTop:12, fontSize:12, color:'#065f46', background:'#ecfdf5', border:'1px solid #a7f3d0', padding:'8px 10px', borderRadius:8 }}>
+            {infoMessage}
+          </div>
+        )}
         {imageUrl && (
           <section style={{ marginTop:24, background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, overflow:'hidden' }}>
             <div style={{ background:'#f3f4f6', padding:'10px 14px', fontWeight:600, color:'#111827' }}>Measure</div>
@@ -87,6 +93,8 @@ export default function Home() {
                 requestCalibrateToken={calibrateTick}
                 requestFullscreenToken={fullscreenTick}
                 onFullscreenChange={(fs)=> setIsFullscreen(fs)}
+                onTrimmedImage={(cropped, _quad, conf)=>{ setImageUrl(cropped); setInfoMessage(`Trimmed frame (confidence ${Math.round((conf||0)*100)}%)`); }}
+                onScaleDetected={(s,u,_m,_c)=>{ setScale(s); setUnit(u); }}
               />
             </div>
           </section>

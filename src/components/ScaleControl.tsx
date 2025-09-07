@@ -12,16 +12,11 @@ interface ScaleControlProps {
 export default function ScaleControl({ onScaleSet, currentScale, currentUnit, onRequestCalibrate }: ScaleControlProps) {
   const [unit] = useState('meters');
 
-  const handleAutoDetect = async () => {
-    // TODO: Implement AI scale detection
-    alert('AI scale detection will be implemented here');
-  };
-
   // Manual numeric entry removed; prefer Calibrate on canvas
 
   return (
     <div className="space-y-4">
-      {currentScale ? (
+  {currentScale ? (
         <div className="p-4 bg-green-50 rounded-lg border border-green-200">
           <div className="flex items-center space-x-2">
             <div className="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center">
@@ -51,16 +46,10 @@ export default function ScaleControl({ onScaleSet, currentScale, currentUnit, on
         </div>
       )}
 
-          <div className="grid grid-cols-2 gap-3">
-        <button
-          onClick={handleAutoDetect}
-          className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:from-blue-600 hover:to-blue-700 transition-all transform hover:scale-105 shadow-sm"
-        >
-          Auto Detect
-        </button>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <button
-              onClick={() => onRequestCalibrate && onRequestCalibrate()}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all transform hover:scale-105 shadow-sm bg-white text-gray-700 border border-gray-300 hover:bg-gray-50`}
+        onClick={() => onRequestCalibrate && onRequestCalibrate()}
+        className={`px-4 py-2 rounded-lg text-sm font-medium transition-all transform hover:scale-105 shadow-sm bg-white text-gray-700 border border-gray-300 hover:bg-gray-50`}
             >
               Start Calibrate
             </button>
