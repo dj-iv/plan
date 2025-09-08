@@ -51,12 +51,12 @@ export default function ScaleControl({ onScaleSet, currentScale, currentUnit, on
         onClick={() => onRequestCalibrate && onRequestCalibrate()}
         className={`px-4 py-2 rounded-lg text-sm font-medium transition-all transform hover:scale-105 shadow-sm bg-white text-gray-700 border border-gray-300 hover:bg-gray-50`}
             >
-              Start Calibrate
+              Calibrate Distance
             </button>
       </div>
 
           <p className="text-xs text-gray-500">
-            Tip: Prefer Calibrate — click two points of a known distance on the plan to set scale automatically.
+            Tip: Prefer Calibrate Distance — click two points of a known distance on the plan to set scale automatically.
           </p>
     </div>
   );

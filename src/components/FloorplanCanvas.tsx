@@ -49,7 +49,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   const [imageLoaded, setImageLoaded] = useState(false);
   const [currentArea, setCurrentArea] = useState<Point[]>([]);
   const [areas, setAreas] = useState<Area[]>([]);
-  const [mode, setMode] = useState<'select' | 'calibrate' | 'calibrate-area' | 'roi' | 'edit-poly' | 'exclude' | 'pick-hole' | 'edit-hole' | 'manual-exclude' | 'refine'>('select');
+  const [mode, setMode] = useState<'select' | 'measure' | 'calibrate' | 'calibrate-area' | 'roi' | 'edit-poly' | 'exclude' | 'pick-hole' | 'edit-hole' | 'manual-exclude' | 'refine'>('select');
   const [calibrationPoints, setCalibrationPoints] = useState<Point[]>([]);
   const [calibrationReal, setCalibrationReal] = useState<string>("");
   const [calibrationUnit, setCalibrationUnit] = useState<string>('meters');
@@ -433,14 +433,15 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       ctx.restore();
     }
 
-    // Draw current area being drawn (with subtle styling and smaller handles)
+    // Draw current area/path being drawn (with subtle styling and smaller handles)
     if (currentArea.length > 0) {
       // inline draw to control style for in-progress shape
       ctx.save();
       ctx.beginPath();
       ctx.moveTo(currentArea[0].x, currentArea[0].y);
       for (let i=1;i<currentArea.length;i++) ctx.lineTo(currentArea[i].x, currentArea[i].y);
-      if (currentArea.length > 2) {
+      // Only close/fill when selecting area, not when measuring distance
+      if (mode === 'select' && currentArea.length > 2) {
         ctx.closePath();
         ctx.fillStyle = 'rgba(59, 130, 246, 0.10)';
         ctx.fill();
@@ -448,13 +449,66 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       ctx.strokeStyle = 'rgba(59, 130, 246, 0.6)';
       ctx.lineWidth = 1.5;
       ctx.stroke();
-      if (mode === 'select') {
+      if (mode === 'select' || mode === 'measure') {
         ctx.fillStyle = 'rgba(37,99,235,0.9)';
         const r = Math.max(2, 4/Math.max(0.2, zoom));
         for (const pt of currentArea) {
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, r, 0, Math.PI*2);
           ctx.fill();
+        }
+
+        // Live ruler: show per-segment lengths and cumulative path in Measure mode only
+        if (mode === 'measure' && image && scale) {
+          const scaleX = image.width / canvasSize.width;
+          const scaleY = image.height / canvasSize.height;
+          const formatDist = (val: number) => `${val.toFixed(2)} ${scaleUnit}`;
+
+          // Helper to draw a small label at a canvas position
+          const drawLabel = (x: number, y: number, text: string) => {
+            ctx.save();
+            ctx.font = `${Math.max(10, Math.round(12/Math.max(0.5, 1)))}px ui-sans-serif, system-ui`;
+            const paddingX = 6, paddingY = 3;
+            const metrics = ctx.measureText(text);
+            const w = Math.ceil(metrics.width) + paddingX*2;
+            const h = 16 + paddingY*2;
+            const rx = 4;
+            const bx = x - w/2;
+            const by = y - h - 6;
+            // rounded rect background
+            ctx.beginPath();
+            ctx.moveTo(bx+rx, by);
+            ctx.arcTo(bx+w, by, bx+w, by+h, rx);
+            ctx.arcTo(bx+w, by+h, bx, by+h, rx);
+            ctx.arcTo(bx, by+h, bx, by, rx);
+            ctx.arcTo(bx, by, bx+w, by, rx);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(17,24,39,0.85)';
+            ctx.fill();
+            // text
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(text, bx + paddingX, by + h - paddingY - 4);
+            ctx.restore();
+          };
+
+          // Per-segment labels and cumulative path
+          let totalUnits = 0;
+          for (let i = 1; i < currentArea.length; i++) {
+            const a = currentArea[i-1];
+            const b = currentArea[i];
+            const dx = (b.x - a.x) * scaleX;
+            const dy = (b.y - a.y) * scaleY;
+            const segUnits = Math.hypot(dx, dy) * scale;
+            totalUnits += segUnits;
+            // mid-point for label in canvas coords
+            const mx = (a.x + b.x) / 2;
+            const my = (a.y + b.y) / 2;
+            drawLabel(mx, my, formatDist(segUnits));
+          }
+
+          // Show cumulative path near the last point
+          const last = currentArea[currentArea.length - 1];
+          drawLabel(last.x, last.y, `Path: ${formatDist(totalUnits)}`);
         }
       }
       ctx.restore();
@@ -676,7 +730,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
 
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (mustCalibrate && mode !== 'calibrate' && mode !== 'calibrate-area') {
-      alert('Please calibrate first (Calibrate or Calibrate Area).');
+  alert('Please calibrate first (Calibrate Distance or Calibrate Area).');
       setMode('calibrate');
       return;
     }
@@ -766,7 +820,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
           return;
         }
       }
-  } else if (mode === 'select' || mode === 'manual-exclude') {
+  } else if (mode === 'select' || mode === 'manual-exclude' || mode === 'measure') {
       // Support Refine-like edits while drawing: Alt to delete vertex, Ctrl to insert on closest edge
       const isAlt = event.altKey === true;
       const isCtrl = event.ctrlKey === true || event.metaKey === true;
@@ -829,7 +883,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
 
   const addSelection = () => {
     if (mustCalibrate) {
-      alert('Please calibrate first (Calibrate or Calibrate Area).');
+      alert('Please calibrate first (Calibrate Distance or Calibrate Area).');
       setMode('calibrate');
       return;
     }
@@ -1117,7 +1171,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
           return;
         }
       }
-  if (mode === 'select' && currentArea && currentArea.length) {
+  if ((mode === 'select' || mode === 'measure') && currentArea && currentArea.length) {
         // Allow dragging vertices of the area being drawn
         const canvas = canvasRef.current; if (!canvas) return;
         const rect = canvas.getBoundingClientRect();
@@ -1179,7 +1233,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       setPerimeter(next);
       return;
     }
-    if (mode === 'select' && currentArea && draggingVertexIdxRef.current !== null && draggingTargetRef.current === 'currentArea') {
+  if ((mode === 'select' || mode === 'measure') && currentArea && draggingVertexIdxRef.current !== null && draggingTargetRef.current === 'currentArea') {
       const canvas = canvasRef.current; if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
       let cx = (e.clientX - rect.left) * (canvas.width / rect.width);
@@ -1500,15 +1554,25 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     }
   }, [requestCalibrateToken]);
 
-  // Exit browser-overlay fullscreen on Escape
+  // Global shortcuts: Escape exit fullscreen, Ctrl/Cmd+Z undo, M toggle Measure/Select
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-  if (e.key === 'Escape') setIsFullscreen(false);
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
+      const key = e.key?.toLowerCase?.() || '';
+      if (key === 'escape') {
+        setIsFullscreen(false);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && key === 'z') { e.preventDefault(); undo(); return; }
+      if (key === 'm') {
+        e.preventDefault();
+        if (mustCalibrate) { setMode('calibrate'); return; }
+        setMode(prev => (prev === 'measure' ? 'select' : 'measure'));
+        return;
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [mustCalibrate]);
 
   // Outside trigger to open fullscreen ONLY when token changes
   useEffect(() => {
@@ -1688,6 +1752,18 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
             Select Area
           </button>
           <button type="button"
+            onClick={() => { if (mustCalibrate) { setMode('calibrate'); return; } setMode('measure'); }}
+            disabled={mustCalibrate}
+            className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 ${
+              mode === 'measure' 
+                ? 'bg-white text-blue-600 shadow-sm' 
+                : 'bg-white/20 text-white hover:bg-white/30'
+            }`}
+            title="Measure Distance (multi-segment path)"
+          >
+            Measure Distance
+          </button>
+          <button type="button"
             onClick={() => {
               if (mustCalibrate) { setMode('calibrate'); return; }
               if (mode === 'exclude' || mode === 'manual-exclude') { setMode('select'); return; }
@@ -1702,7 +1778,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
           </button>
           <button type="button"
             onClick={addSelection}
-            disabled={mustCalibrate}
+            disabled={mustCalibrate || mode==='measure'}
             className="bg-green-500 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-600 transition-all transform hover:scale-105 shadow-sm"
             title="Add current selection to Summary"
           >
@@ -1721,7 +1797,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
             className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 ${mode==='calibrate' ? 'bg-white text-orange-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'}`}
             title="Calibrate by known distance"
           >
-            Calibrate
+            Calibrate Distance
           </button>
           <button type="button"
             onClick={() => { setMode('calibrate-area'); setCalibrationAreaPoints([]); setCalibrationAreaReal(''); }}
@@ -1808,9 +1884,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
               )}
             </div>
           ) : (
-            <div className="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm">
-              ⚠️ No Scale Set
-            </div>
+            <div className="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm">⚠️ No Scale Set</div>
           )}
           {scale && selections.length > 0 && (
             <div className="px-3 py-1.5 bg-white/20 text-white rounded-lg text-sm backdrop-blur-sm">
@@ -1839,9 +1913,9 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
                 height: 'auto'
               }}
             />
-            {mustCalibrate && mode !== 'calibrate' && mode !== 'calibrate-area' && (
+      {mustCalibrate && mode !== 'calibrate' && mode !== 'calibrate-area' && (
               <div className="absolute mt-4 p-2 rounded bg-amber-100 text-amber-900 border border-amber-200 shadow">
-                Please calibrate to begin. Use Calibrate or Calibrate Area.
+        Please calibrate to begin. Use Calibrate Distance or Calibrate Area.
               </div>
             )}
           </div>
@@ -2021,8 +2095,8 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
         )
       )}
 
-      {/* Current area status - Professional */}
-      {currentArea.length > 0 && (
+  {/* Current area/path status - Professional */}
+  {currentArea.length > 0 && (
         isFullscreen ? (
           <div className="absolute left-1/2 -translate-x-1/2 bottom-4 z-[1100] p-3 rounded-lg bg-blue-50/95 border border-blue-200 shadow">
             <div className="flex items-center space-x-2">
@@ -2032,8 +2106,8 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
                 </svg>
               </div>
               <div>
-                <p className="text-sm font-medium text-blue-800">Drawing in progress</p>
-                <p className="text-xs text-blue-600">{currentArea.length} points selected{currentArea.length >= 3 ? ' • Click "Add" to complete' : ` • ${3 - currentArea.length} more points needed`}</p>
+  <p className="text-sm font-medium text-blue-800">{mode === 'measure' ? 'Measuring distance (press M to toggle)' : 'Drawing area'}</p>
+  <p className="text-xs text-blue-600">{currentArea.length} points selected{mode === 'measure' ? ' • Add is disabled in Measure' : (currentArea.length >= 3 ? ' • Click "Add" to complete' : ` • ${3 - currentArea.length} more points needed`)}</p>
               </div>
             </div>
           </div>
@@ -2046,8 +2120,8 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
                 </svg>
               </div>
               <div>
-                <p className="text-sm font-medium text-blue-800">Drawing in progress</p>
-                <p className="text-xs text-blue-600">{currentArea.length} points selected{currentArea.length >= 3 ? ' • Click "Add" to complete' : ` • ${3 - currentArea.length} more points needed`}</p>
+  <p className="text-sm font-medium text-blue-800">{mode === 'measure' ? 'Measuring distance (press M to toggle)' : 'Drawing area'}</p>
+  <p className="text-xs text-blue-600">{currentArea.length} points selected{mode === 'measure' ? ' • Add is disabled in Measure' : (currentArea.length >= 3 ? ' • Click "Add" to complete' : ` • ${3 - currentArea.length} more points needed`)}</p>
               </div>
             </div>
           </div>
@@ -2081,9 +2155,9 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
             <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
               <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md border">
                 <h2 className="text-lg font-semibold text-gray-900 mb-2">Calibration required</h2>
-                <p className="text-sm text-gray-600 mb-4">Set the scale before measuring. Choose a known distance or a known area to calibrate.</p>
+                <p className="text-sm text-gray-600 mb-4">Set the scale before measuring. Choose a known distance (Calibrate Distance) or a known area (Calibrate Area).</p>
                 <div className="flex items-center gap-3">
-                  <button onClick={() => setMode('calibrate')} className="flex-1 px-4 py-2 rounded-lg bg-orange-600 text-white hover:bg-orange-700">Calibrate</button>
+                  <button onClick={() => setMode('calibrate')} className="flex-1 px-4 py-2 rounded-lg bg-orange-600 text-white hover:bg-orange-700">Calibrate Distance</button>
                   <button onClick={() => setMode('calibrate-area')} className="flex-1 px-4 py-2 rounded-lg bg-orange-100 text-orange-900 hover:bg-orange-200">Calibrate Area</button>
                 </div>
               </div>
