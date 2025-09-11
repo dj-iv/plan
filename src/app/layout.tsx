@@ -60,7 +60,9 @@ export default function RootLayout({
       <body className="antialiased">
         <div id="app-root">
           {/* Render content after mount to avoid overlay SSR mismatches, but keep SSR shell */}
-          <ClientOnly>{children}</ClientOnly>
+          <ClientOnly>
+            {children}
+          </ClientOnly>
         </div>
       </body>
     </html>

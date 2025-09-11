@@ -232,7 +232,7 @@ export default function FileUpload({ onFileUpload, onPdfImageReady }: FileUpload
                   PNG, JPG, PDF up to 50MB; DWG (beta)
                 </p>
                 <p className="text-xs text-gray-400 mt-1">
-                  Automatic scale detection (beta)
+                  Manual scale setting available
                 </p>
               </div>
             )}

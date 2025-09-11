@@ -1,0 +1,104 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+
+type FloorplanCanvasProps = {
+  imageUrl: string;
+  scale: number | null;
+  scaleUnit?: string;
+  onCalibrate?: (scale: number, unit: string) => void;
+  requestCalibrateToken?: number;
+  requestFullscreenToken?: number;
+  onFullscreenChange?: (fs: boolean) => void;
+  onTrimmedImage?: (cropped: string, quad: any, conf?: number) => void;
+  onScaleDetected?: (s: number, u: string, m?: string, c?: number) => void;
+};
+
+export default function FloorplanCanvas({
+  imageUrl,
+  scale,
+  scaleUnit = 'meters',
+  onCalibrate,
+  requestCalibrateToken,
+  requestFullscreenToken,
+  onFullscreenChange,
+  onTrimmedImage,
+  onScaleDetected
+}: FloorplanCanvasProps) {
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [mustCalibrate, setMustCalibrate] = useState(!scale);
+  const [showModal, setShowModal] = useState(false);
+  const [calibrationValue, setCalibrationValue] = useState<string>('');
+  const [calibrationUnit, setCalibrationUnit] = useState<string>(scaleUnit);
+
+  useEffect(() => setMustCalibrate(!scale), [scale]);
+
+  // Open modal when requested
+  useEffect(() => {
+    if (requestCalibrateToken) {
+      setShowModal(true);
+    }
+  }, [requestCalibrateToken]);
+
+  // Toggle fullscreen when token changes
+  useEffect(() => {
+    if (requestFullscreenToken) {
+      setIsFullscreen(true);
+      onFullscreenChange && onFullscreenChange(true);
+    }
+  }, [requestFullscreenToken, onFullscreenChange]);
+
+  const applyCalibration = () => {
+    const v = parseFloat(calibrationValue);
+    if (!isNaN(v) && v > 0) {
+      onCalibrate && onCalibrate(1 / v, calibrationUnit);
+      setShowModal(false);
+    }
+  };
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12 }}>
+        <div>
+          <strong>Scale:</strong> {scale ? `1px = ${scale} ${scaleUnit}` : 'Not set'}
+        </div>
+        <div>
+          <button onClick={() => { setShowModal(true); setIsFullscreen(false); }} style={{ marginRight: 8 }}>Calibrate Distance</button>
+          <button onClick={() => { setShowModal(true); setIsFullscreen(false); }}>Calibrate Area</button>
+          <button onClick={() => { setIsFullscreen(v => !v); onFullscreenChange && onFullscreenChange(!isFullscreen); }}>
+            {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ padding: 12 }}>
+        {imageUrl ? (
+          <img src={imageUrl} alt="Floorplan" style={{ maxWidth: '100%', border: '1px solid #ddd', borderRadius: 8 }} />
+        ) : (
+          <div style={{ height: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888' }}>No image</div>
+        )}
+      </div>
+
+      {showModal && (
+        <div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)', zIndex: 2000 }}>
+          <div style={{ background: 'white', padding: 20, borderRadius: 8, width: 420, maxWidth: '95%' }}>
+            <h3 style={{ marginTop: 0 }}>Calibration required</h3>
+            <p style={{ color: '#555' }}>Set a known distance on the plan. Enter the real-world length for 1 unit of image measurement.</p>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <input value={calibrationValue} onChange={e => setCalibrationValue(e.target.value)} placeholder="Known distance" style={{ flex: 1, padding: 8 }} />
+              <select value={calibrationUnit} onChange={e => setCalibrationUnit(e.target.value)} style={{ padding: 8 }}>
+                <option value="meters">meters</option>
+                <option value="feet">feet</option>
+                <option value="centimeters">centimeters</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <button onClick={() => setShowModal(false)}>Cancel</button>
+              <button onClick={applyCalibration} style={{ background: '#f97316', color: 'white', padding: '8px 12px', borderRadius: 6 }}>Apply</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

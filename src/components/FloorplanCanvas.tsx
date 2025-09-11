@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import SmartAutoPlaceButton from './SmartAutoPlaceButton';
+import useFixAutoPlaceButton from '@/hooks/useFixAutoPlaceButton';
+import { simpleAutoPlaceAntennas } from '@/utils/antennaUtils';
 // Trim now runs in a Web Worker at /workers/trim-opencv.js to avoid blocking UI
 
 interface FloorplanCanvasProps {
@@ -41,15 +44,39 @@ interface SelectionEntry {
   label?: string;
 }
 
+// Antenna placement feature
+interface Antenna {
+  id: string;
+  position: Point;
+  range: number; // in meters
+  power?: number; // 0-100 percentage, optional to match antennaUtils
+}
+
 export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrate, requestCalibrateToken, requestFullscreenToken, onFullscreenChange, onTrimmedImage, onScaleDetected }: FloorplanCanvasProps) {
+  // Use our custom hook to fix the Auto Place button
+  // useFixAutoPlaceButton(); // Disabled - causing memory leak and unnecessary
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  // Add emergency antenna listener
+  useEffect(() => {
+    const handleEmergencyAntennaPlace = (event: Event) => {
+      console.log('EMERGENCY ANTENNA PLACEMENT TRIGGERED');
+      autoPlaceAntennas();
+    };
+    
+    document.addEventListener('emergencyAntennaPlace', handleEmergencyAntennaPlace);
+    
+    return () => {
+      document.removeEventListener('emergencyAntennaPlace', handleEmergencyAntennaPlace);
+    };
+  }, []);
   const containerRef = useRef<HTMLDivElement>(null);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [imageLoaded, setImageLoaded] = useState(false);
   const [currentArea, setCurrentArea] = useState<Point[]>([]);
   const [areas, setAreas] = useState<Area[]>([]);
-  const [mode, setMode] = useState<'select' | 'measure' | 'calibrate' | 'calibrate-area' | 'roi' | 'edit-poly' | 'exclude' | 'pick-hole' | 'edit-hole' | 'manual-exclude' | 'refine'>('select');
+  const [mode, setMode] = useState<'select' | 'measure' | 'calibrate' | 'calibrate-area' | 'roi' | 'edit-poly' | 'exclude' | 'pick-hole' | 'edit-hole' | 'manual-exclude' | 'refine' | 'antenna'>('select');
   const [calibrationPoints, setCalibrationPoints] = useState<Point[]>([]);
   const [calibrationReal, setCalibrationReal] = useState<string>("");
   const [calibrationUnit, setCalibrationUnit] = useState<string>('meters');
@@ -92,6 +119,30 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   const [manualHoles, setManualHoles] = useState<Point[][]>([]);
   const [manualResult, setManualResult] = useState<number | null>(null);
   const manualActive = manualRegions.length > 0 || manualHoles.length > 0 || currentArea.length >= 1;
+  
+  // Antenna placement feature
+  const [antennas, setAntennas] = useState<Antenna[]>([]);
+  const [selectedAntennaId, setSelectedAntennaId] = useState<string | null>(null);
+  const [showCoverage, setShowCoverage] = useState<boolean>(true);
+  const [showRadiusBoundary, setShowRadiusBoundary] = useState<boolean>(true);
+  // Always force coverage to be visible for debugging
+  useEffect(() => {
+    setShowCoverage(true);
+  }, []);
+  const [isDraggingAntenna, setIsDraggingAntenna] = useState<boolean>(false);
+  const [isPlacingAntennas, setIsPlacingAntennas] = useState<boolean>(false); // Flag for auto-placement in progress
+  const [antennaRange, setAntennaRange] = useState<number>(5); // Default 5m range (changed from 25m)
+  const [antennaDensity, setAntennaDensity] = useState<number>(130); // Default density 130% (grid spacing percentage)
+  const [previewAntennas, setPreviewAntennas] = useState<Antenna[]>([]); // For live preview
+  
+  // Redraw canvas when antennas, preview, or coverage settings change
+  useEffect(() => {
+    console.log('Antenna state changed, redrawing canvas. Antennas:', antennas.length, 'Preview:', previewAntennas.length, 'Coverage:', showCoverage);
+    if (imageLoaded) {
+      drawCanvas();
+    }
+  }, [antennas, previewAntennas, showCoverage, showRadiusBoundary]);
+  
   // History for Undo: snapshot all relevant measurable state
   type Snapshot = {
     areas: Area[];
@@ -106,20 +157,22 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     justSavedObject: boolean;
     autoHolesPreview: Point[][];
     autoHolesIndex: number;
+    antennas: Antenna[]; // Added for antenna state
     excludeCurrent: Point[];
     roi: {x:number;y:number;w:number;h:number} | null;
     mode: typeof mode;
     manualRegions: Point[][];
     manualHoles: Point[][];
     manualResult: number | null;
-  selections: SelectionEntry[];
-  savedAreas: Point[][];
-  savedExclusions: Point[][];
+    selections: SelectionEntry[];
+    savedAreas: Point[][];
+    savedExclusions: Point[][];
   };
 
   const historyRef = useRef<Snapshot[]>([]);
   const draggingVertexIdxRef = useRef<number | null>(null);
   const draggingHoleIndexRef = useRef<number | null>(null);
+  const draggingAntennaIdRef = useRef<string | null>(null);
   const draggingTargetRef = useRef<'perimeter' | 'currentArea' | 'calArea' | 'hole' | null>(null);
   // Preserve view (zoom/pan) across image replacements (e.g., after Trim)
   const preserveViewRef = useRef<null | { compositeScale: number; centerImg: {x:number;y:number} }>(null);
@@ -238,6 +291,11 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   setRoi(r => r ? ({ x: r.x * sx, y: r.y * sy, w: r.w * sx, h: r.h * sy }) : r);
   setSavedAreas(sa => sa.map(poly => poly.map(p => ({ x: p.x * sx, y: p.y * sy }))));
   setSavedExclusions(se => se.map(poly => poly.map(p => ({ x: p.x * sx, y: p.y * sy }))));
+        // FIX: Also transform antenna positions during canvas resize
+        setAntennas(ants => ants.map(ant => ({
+          ...ant,
+          position: { x: ant.position.x * sx, y: ant.position.y * sy }
+        })));
         setPan(p => ({ x: p.x * sx, y: p.y * sy }));
       }
     }
@@ -304,9 +362,11 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
-    // Set canvas size
-    canvas.width = canvasSize.width;
-    canvas.height = canvasSize.height;
+    // Set canvas size only if it changed
+    if (canvas.width !== canvasSize.width || canvas.height !== canvasSize.height) {
+      canvas.width = canvasSize.width;
+      canvas.height = canvasSize.height;
+    }
     
     // Clear canvas
     ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
@@ -440,16 +500,16 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       ctx.beginPath();
       ctx.moveTo(currentArea[0].x, currentArea[0].y);
       for (let i=1;i<currentArea.length;i++) ctx.lineTo(currentArea[i].x, currentArea[i].y);
-      // Only close/fill when selecting area, not when measuring distance
-      if (mode === 'select' && currentArea.length > 2) {
+      // Close/fill polygon for select and manual-exclude modes, not for measuring distance
+      if ((mode === 'select' || mode === 'manual-exclude') && currentArea.length > 2) {
         ctx.closePath();
-        ctx.fillStyle = 'rgba(59, 130, 246, 0.10)';
+        ctx.fillStyle = mode === 'manual-exclude' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(59, 130, 246, 0.10)'; // Red for exclusions, blue for areas
         ctx.fill();
       }
-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.6)';
+      ctx.strokeStyle = mode === 'manual-exclude' ? 'rgba(239, 68, 68, 0.8)' : 'rgba(59, 130, 246, 0.6)'; // Red for exclusions, blue for areas
       ctx.lineWidth = 1.5;
       ctx.stroke();
-      if (mode === 'select' || mode === 'measure') {
+      if (mode === 'select' || mode === 'measure' || mode === 'manual-exclude') {
         ctx.fillStyle = 'rgba(37,99,235,0.9)';
         const r = Math.max(2, 4/Math.max(0.2, zoom));
         for (const pt of currentArea) {
@@ -653,6 +713,221 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       ctx.closePath();
       ctx.stroke();
     }
+    ctx.restore();
+  }
+  
+  // Draw preview antennas (semi-transparent)
+  if (previewAntennas.length > 0 && antennas.length === 0) {
+    console.log('🟣 DRAWING: Drawing', previewAntennas.length, 'preview antennas');
+    ctx.save();
+    ctx.globalAlpha = 0.5; // Semi-transparent
+    
+    // Draw preview coverage areas
+    if (showCoverage) {
+      for (const antenna of previewAntennas) {
+        const { x, y } = antenna.position;
+        const range = antenna.range;
+        const radiusInPixels = range / (scale || 1);
+        const visibleRadius = Math.max(radiusInPixels, 20);
+        
+        // Draw preview coverage circle (lighter green)
+        const gradient = ctx.createRadialGradient(x, y, 0, x, y, visibleRadius);
+        gradient.addColorStop(0, 'rgba(100, 255, 100, 0.3)');
+        gradient.addColorStop(0.5, 'rgba(150, 255, 150, 0.2)');
+        gradient.addColorStop(1, 'rgba(200, 255, 200, 0.1)');
+        
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(x, y, visibleRadius, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Draw preview boundary
+        ctx.strokeStyle = 'rgba(100, 200, 100, 0.4)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([5, 5]); // Dashed line for preview
+        ctx.stroke();
+        ctx.setLineDash([]); // Reset line dash
+      }
+    }
+    
+    // Draw preview antenna icons
+    for (const antenna of previewAntennas) {
+      const { x, y } = antenna.position;
+      
+      // Draw antenna icon (lighter/dashed)
+      ctx.strokeStyle = 'rgba(80, 80, 80, 0.6)';
+      ctx.fillStyle = 'rgba(120, 120, 120, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      
+      // Draw preview antenna square
+      ctx.fillRect(x - 6, y - 6, 12, 12);
+      ctx.strokeRect(x - 6, y - 6, 12, 12);
+      ctx.setLineDash([]);
+    }
+    
+    ctx.restore();
+  } else {
+    console.log('🟣 DRAWING: NOT drawing preview antennas. Preview count:', previewAntennas.length, 'Actual antenna count:', antennas.length);
+  }
+
+  // Draw antennas and coverage
+  if (antennas.length > 0) {
+    // console.log("Drawing antennas:", antennas.length, "antennas found");
+    ctx.save();
+    
+    // Draw coverage areas first (underneath the antenna icons)
+    if (showCoverage && antennas.length > 0) {
+      // console.log("Coverage display enabled, drawing", antennas.length, "antennas");
+      for (const antenna of antennas) {
+        const { x, y } = antenna.position;
+        const range = antenna.range;
+        const power = (antenna.power || 50) / 100; // convert to 0-1 scale, default 50%
+        
+        // Calculate the radius in pixels - Apply coordinate system transformation
+        // The scale is in image coordinates, but antenna positions are in canvas coordinates
+        const scaleX = image ? image.width / canvasSize.width : 1;
+        
+        // Convert range from meters to image pixels, then to canvas pixels for drawing
+        const radiusInImagePixels = range / (scale || 1);
+        const radiusInPixels = radiusInImagePixels / scaleX;
+        // console.log(`Antenna at (${x}, ${y}) - Range ${range}m converted to ${radiusInPixels.toFixed(2)} pixels with scale ${scale}`);
+        
+        // Use the correctly transformed radius
+        const visibleRadius = radiusInPixels;
+        
+        // Check if the point is in an exclusion zone before drawing
+        let isInExclusion = false;
+        
+        // Check all exclusion areas (holes)
+        if (holes.length > 0) {
+          isInExclusion = holes.some(hole => isPointInPolygon({ x, y }, hole));
+        }
+        
+        // Check manually excluded areas
+        if (!isInExclusion && manualHoles.length > 0) {
+          isInExclusion = manualHoles.some(hole => isPointInPolygon({ x, y }, hole));
+        }
+        
+        // Skip this antenna if it's in an exclusion zone
+        if (isInExclusion) {
+          console.log(`Skipping antenna at (${x}, ${y}) - in exclusion zone`);
+          continue;
+        }
+        
+        // Create a green gradient for signal strength visualization - VERY VISIBLE
+        const gradient = ctx.createRadialGradient(x, y, 0, x, y, visibleRadius);
+        gradient.addColorStop(0, `rgba(0, 200, 0, ${Math.max(0.8, 0.9 * power)})`); // Very dark green center, more opaque
+        gradient.addColorStop(0.3, `rgba(50, 255, 50, ${Math.max(0.6, 0.7 * power)})`); // Bright green
+        gradient.addColorStop(0.6, `rgba(100, 255, 100, ${Math.max(0.5, 0.5 * power)})`); // Light bright green  
+        gradient.addColorStop(0.9, `rgba(150, 255, 150, ${Math.max(0.3, 0.3 * power)})`); // Very light green
+        gradient.addColorStop(1, `rgba(150, 255, 150, ${Math.max(0.2, 0.15 * power)})`); // Still visible at edge
+        
+        ctx.beginPath();
+        ctx.arc(x, y, visibleRadius, 0, Math.PI * 2);
+        ctx.fillStyle = gradient;
+        ctx.fill();
+        // console.log(`Drew coverage circle at (${x}, ${y}) with radius ${visibleRadius}px, power ${power}`);
+        
+        // Draw range indicator circle if enabled
+        if (showRadiusBoundary) {
+          ctx.beginPath();
+          ctx.arc(x, y, visibleRadius, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(20, 83, 45, ${Math.max(0.7, 0.8 * power)})`; // Dark green border, more visible
+          ctx.lineWidth = 2; // Thicker line
+          ctx.setLineDash([5, 5]); // Dotted line
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        
+        // Display the range value in meters
+        const textX = x + visibleRadius * 0.7;
+        const textY = y - visibleRadius * 0.7;
+        
+        // Draw text with background for better visibility
+        ctx.font = 'bold 14px Arial';
+        // Skip range text display on circles - we know the range from the control panel
+        // const rangeText = `${range}m`;
+        // const textWidth = ctx.measureText(rangeText).width;
+        
+        // Text background
+        // ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        // ctx.fillRect(textX - 4, textY - 14, textWidth + 8, 18);
+        
+        // Text
+        // ctx.fillStyle = 'rgba(20, 83, 45, 0.9)'; // Dark green text
+        // ctx.fillText(rangeText, textX, textY);
+      }
+    } else if (antennas.length === 0) {
+      console.log("No antennas to display");
+    } else {
+      console.log("Coverage display disabled but", antennas.length, "antennas exist");
+    }
+    
+    // Draw antenna icons on top
+    if (antennas.length > 0) {
+      // console.log("Drawing", antennas.length, "antenna icons");
+    }
+    for (const antenna of antennas) {
+      const { x, y } = antenna.position;
+      const isSelected = antenna.id === selectedAntennaId;
+
+      // Draw Wi-Fi style antenna symbol - cleaner and more recognizable
+      const iconSize = 14; // Optimal size for visibility and clarity      // Draw circular background for contrast
+      ctx.fillStyle = isSelected ? 'rgba(255, 140, 0, 0.95)' : 'rgba(59, 130, 246, 0.95)'; // Orange when selected, blue otherwise
+      ctx.beginPath();
+      ctx.arc(x, y, iconSize/2 + 2, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      // Draw white border for definition
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, iconSize/2 + 2, 0, 2 * Math.PI);
+      ctx.stroke();
+      
+      // Draw Wi-Fi symbol - three concentric arcs
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      
+      // Center dot
+      ctx.fillStyle = 'white';
+      ctx.beginPath();
+      ctx.arc(x, y, 2, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      // Three signal arcs of increasing size
+      for (let i = 1; i <= 3; i++) {
+        const arcRadius = i * 3;
+        const startAngle = -Math.PI * 0.25; // Start from top-left
+        const endAngle = Math.PI * 0.25;    // End at top-right
+        
+        ctx.beginPath();
+        ctx.arc(x, y, arcRadius, startAngle, endAngle);
+        ctx.stroke();
+        
+        // Mirror arc on the bottom
+        ctx.beginPath();
+        ctx.arc(x, y, arcRadius, Math.PI - endAngle, Math.PI - startAngle);
+        ctx.stroke();
+      }
+      
+      // Add signal waves for extra visibility
+      if (!showCoverage) { // Only show waves when coverage circles are off
+        ctx.strokeStyle = isSelected ? 'rgba(255, 100, 0, 0.6)' : 'rgba(30, 144, 255, 0.6)';
+        ctx.lineWidth = 1.5;
+        for (let i = 1; i <= 2; i++) {
+          ctx.beginPath();
+          ctx.arc(x, y, iconSize/2 + 2 + i * 4, -Math.PI/4, Math.PI/4);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(x, y, iconSize/2 + 2 + i * 4, 3*Math.PI/4, 5*Math.PI/4);
+          ctx.stroke();
+        }
+      }
+    }
+    
     ctx.restore();
   }
   ctx.restore();
@@ -878,10 +1153,79 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       }
     pushHistory();
     setCalibrationAreaPoints(prev => [...prev, p]);
+    } else if (mode === 'antenna') {
+      const p = { x, y };
+      const isAlt = event.altKey === true;
+      const isCtrl = event.ctrlKey === true || event.metaKey === true;
+      const thr = 15 / Math.max(0.2, zoom); // Slightly larger threshold for antennas
+      
+      // Alt + click: remove antenna
+      if (isAlt) {
+        for (let i = 0; i < antennas.length; i++) {
+          const antenna = antennas[i];
+          const d = Math.hypot(p.x - antenna.position.x, p.y - antenna.position.y);
+          if (d <= thr) {
+            pushHistory();
+            const newAntennas = antennas.filter(a => a.id !== antenna.id);
+            setAntennas(newAntennas);
+            if (selectedAntennaId === antenna.id) {
+              setSelectedAntennaId(null);
+            }
+            return;
+          }
+        }
+      }
+      
+      // Ctrl + click: select antenna for editing
+      if (isCtrl) {
+        for (let i = 0; i < antennas.length; i++) {
+          const antenna = antennas[i];
+          const d = Math.hypot(p.x - antenna.position.x, p.y - antenna.position.y);
+          if (d <= thr) {
+            setSelectedAntennaId(selectedAntennaId === antenna.id ? null : antenna.id);
+            return;
+          }
+        }
+        setSelectedAntennaId(null);
+        return;
+      }
+      
+      // Regular click: place new antenna (dragging handles moving)
+      let clickedAntenna = null;
+      for (let i = 0; i < antennas.length; i++) {
+        const antenna = antennas[i];
+        const d = Math.hypot(p.x - antenna.position.x, p.y - antenna.position.y);
+        if (d <= thr) {
+          clickedAntenna = antenna;
+          break;
+        }
+      }
+      
+      if (clickedAntenna) {
+        // Just select the antenna (dragging handles moving)
+        setSelectedAntennaId(clickedAntenna.id);
+      } else {
+        // Place new antenna
+        pushHistory();
+        const newAntenna: Antenna = {
+          id: Date.now().toString(),
+          position: p,
+          range: antennaRange,
+          power: 50 // Fixed power value
+        };
+        setAntennas([...antennas, newAntenna]);
+        setSelectedAntennaId(newAntenna.id);
+      }
     }
   };
 
   const addSelection = () => {
+    console.log('🟡 ADD SELECTION: Called with mode =', mode);
+    console.log('🟡 ADD SELECTION: currentArea.length =', currentArea.length);
+    console.log('🟡 ADD SELECTION: excludeCurrent.length =', excludeCurrent.length);
+    console.log('🟡 ADD SELECTION: perimeter?.length =', perimeter?.length || 0);
+    console.log('🟡 ADD SELECTION: autoHolesPreview.length =', autoHolesPreview.length);
+    
     if (mustCalibrate) {
       alert('Please calibrate first (Calibrate Distance or Calibrate Area).');
       setMode('calibrate');
@@ -938,13 +1282,21 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     }
     // Manual polygon: add positive (area) or negative (exclusion)
     if (currentArea.length >= 3) {
+      console.log('🟡 ADD SELECTION: Processing currentArea with', currentArea.length, 'points in mode', mode);
       const val = calculateArea(currentArea) * (mode === 'manual-exclude' ? -1 : 1);
+      console.log('🟡 ADD SELECTION: Calculated area value =', val);
     pushHistory();
   setSelections(list => [...list, { id: Date.now().toString(), value: val, label: 'Area' }]);
       // Keep polygon on screen as overlay
       if (mode === 'manual-exclude') {
-        setSavedExclusions(arr => [...arr, currentArea.map(p=>({...p}))]);
+        console.log('🟡 ADD SELECTION: Adding to savedExclusions:', currentArea);
+        setSavedExclusions(arr => {
+          const newExclusions = [...arr, currentArea.map(p=>({...p}))];
+          console.log('🟡 ADD SELECTION: New savedExclusions array:', newExclusions);
+          return newExclusions;
+        });
       } else {
+        console.log('🟡 ADD SELECTION: Adding to savedAreas:', currentArea);
         setSavedAreas(arr => [...arr, currentArea.map(p=>({...p}))]);
       }
     // Reset interactive state for a fresh start
@@ -996,6 +1348,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       justSavedObject,
       autoHolesPreview: autoHolesPreview.map(h=>h.map(p=>({...p}))),
       autoHolesIndex,
+      antennas: antennas.map(a => ({ ...a, position: { ...a.position } })),
       excludeCurrent: excludeCurrent.map(p=>({...p})),
       roi: roi ? { ...roi } : null,
       mode,
@@ -1024,6 +1377,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     setJustSavedObject(last.justSavedObject);
     setAutoHolesPreview(last.autoHolesPreview);
     setAutoHolesIndex(last.autoHolesIndex);
+    setAntennas(last.antennas);
     setExcludeCurrent(last.excludeCurrent);
     setRoi(last.roi);
     setManualRegions(last.manualRegions);
@@ -1171,6 +1525,29 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
           return;
         }
       }
+      
+      // Add antenna dragging support
+      if (mode === 'antenna' && antennas.length > 0) {
+        const canvas = canvasRef.current; if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        let cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+        let cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+        const wx = (cx - pan.x) / zoom; const wy = (cy - pan.y) / zoom;
+        
+        // Find the nearest antenna
+        const thr = 15 / Math.max(0.2, zoom);
+        for (let i = 0; i < antennas.length; i++) {
+          const antenna = antennas[i];
+          const d = Math.hypot(wx - antenna.position.x, wy - antenna.position.y);
+          if (d <= thr) {
+            // Start dragging this antenna
+            draggingAntennaIdRef.current = antenna.id;
+            suppressClickRef.current = true; // Prevent click event from firing
+            return;
+          }
+        }
+      }
+      
   if ((mode === 'select' || mode === 'measure') && currentArea && currentArea.length) {
         // Allow dragging vertices of the area being drawn
         const canvas = canvasRef.current; if (!canvas) return;
@@ -1284,6 +1661,25 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       setCalibrationAreaPoints(next);
       return;
     }
+    
+    // Handle antenna dragging
+    if (mode === 'antenna' && draggingAntennaIdRef.current !== null) {
+      const canvas = canvasRef.current; if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      let cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+      let cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+      const wx = (cx - pan.x) / zoom; const wy = (cy - pan.y) / zoom;
+      
+      // Update antenna position
+      const newAntennas = antennas.map(antenna => 
+        antenna.id === draggingAntennaIdRef.current 
+          ? { ...antenna, position: { x: wx, y: wy } }
+          : antenna
+      );
+      setAntennas(newAntennas);
+      return;
+    }
+    
   if ((mode === 'roi' || mode === 'pick-hole') && roiDragRef.current) {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -1310,6 +1706,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   const handleMouseUp = () => { 
     draggingVertexIdxRef.current = null;
     draggingHoleIndexRef.current = null;
+    draggingAntennaIdRef.current = null;
     draggingTargetRef.current = null;
     // If we just finished drawing an ROI in pick-hole mode, auto-detect largest hole in that rectangle
     if (mode === 'pick-hole' && roi && roi.w > 5 && roi.h > 5) {
@@ -1337,6 +1734,151 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
 
   // Helpers for refine mode
   function distance(a: Point, b: Point) { return Math.hypot(a.x - b.x, a.y - b.y); }
+  
+  // Antenna placement utilities
+  const isPointInPolygon = (point: Point, polygon: Point[]): boolean => {
+    const { x, y } = point;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y;
+      const xj = polygon[j].x, yj = polygon[j].y;
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  };
+
+  const autoPlaceAntennas = () => {
+    if (!scale) {
+      alert('Please set scale first before placing antennas');
+      return;
+    }
+    
+    setIsPlacingAntennas(true);
+    console.log('🟦 AUTO PLACE: Starting antenna placement...');
+    console.log('🟦 AUTO PLACE: savedAreas =', savedAreas.length, savedAreas);
+    console.log('🟦 AUTO PLACE: holes =', holes.length, holes);
+    console.log('🟦 AUTO PLACE: manualHoles =', manualHoles.length, manualHoles);
+    console.log('🟦 AUTO PLACE: savedExclusions =', savedExclusions.length, savedExclusions);
+    console.log('🟦 AUTO PLACE: autoHolesPreview =', autoHolesPreview.length, autoHolesPreview);
+    console.log('🟦 AUTO PLACE: excludeCurrent =', excludeCurrent.length, excludeCurrent);
+    console.log('🟦 AUTO PLACE: currentArea =', currentArea.length, currentArea);
+    console.log('🟦 AUTO PLACE: perimeter =', perimeter?.length || 0);
+    console.log('🟦 AUTO PLACE: mode =', mode);
+    console.log('🟦 AUTO PLACE: Total exclusions being passed =', [...holes, ...manualHoles, ...savedExclusions].length);
+    
+    try {
+      const newAntennas = simpleAutoPlaceAntennas({
+        savedAreas,
+        scale,
+        defaultAntennaRange: antennaRange, // Use current range setting
+        defaultAntennaPower: 50, // Fixed power value
+        isPointInPolygon,
+        exclusions: [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview],
+        gridSpacingPercent: antennaDensity // Pass density to algorithm
+      });
+      
+      setAntennas(newAntennas);
+      console.log(`Placed ${newAntennas.length} antennas`);
+    } catch (error) {
+      console.error('Error placing antennas:', error);
+      alert('Error placing antennas. Please try again.');
+    } finally {
+      setIsPlacingAntennas(false);
+    }
+  };
+
+  // Live preview function - calculates antennas without committing them
+  const updateAntennaPreview = () => {
+    // Only show preview if in antenna mode and no antennas are placed
+    if (mode !== 'antenna') {
+      console.log('🔵 PREVIEW: Skipping preview - not in antenna mode (current:', mode, ')');
+      setPreviewAntennas([]);
+      return;
+    }
+    
+    if (antennas.length > 0) {
+      console.log('🔵 PREVIEW: Skipping preview - antennas already placed');
+      setPreviewAntennas([]);
+      return;
+    }
+    
+    console.log('🔵 PREVIEW: Updating antenna preview...');
+    console.log('🔵 PREVIEW: scale =', scale);
+    console.log('🔵 PREVIEW: savedAreas.length =', savedAreas.length);
+    console.log('🔵 PREVIEW: currentArea.length =', currentArea.length);
+    console.log('🔵 PREVIEW: perimeter?.length =', perimeter?.length);
+    
+    // Determine which areas to use for preview
+    let areasToUse = [];
+    if (perimeter && perimeter.length >= 3) {
+      areasToUse = [perimeter];
+      console.log('🔵 PREVIEW: Using perimeter for preview');
+    } else if (currentArea.length >= 3) {
+      areasToUse = [currentArea];
+      console.log('🔵 PREVIEW: Using currentArea for preview');
+    } else if (savedAreas.length > 0) {
+      areasToUse = savedAreas;
+      console.log('🔵 PREVIEW: Using savedAreas for preview');
+    } else {
+      console.log('🔵 PREVIEW: No areas available for preview');
+      setPreviewAntennas([]);
+      return;
+    }
+    
+    if (!scale) {
+      console.log('🔵 PREVIEW: No scale set');
+      setPreviewAntennas([]);
+      return;
+    }
+
+    try {
+      // Use current settings to generate preview
+      const gridSpacingPercent = antennaDensity; // 100-200% range
+      console.log('🔵 PREVIEW: Generating preview with density =', gridSpacingPercent);
+      
+      const previewAntennas = simpleAutoPlaceAntennas({
+        savedAreas: areasToUse,
+        scale,
+        defaultAntennaRange: antennaRange,
+        defaultAntennaPower: 50, // Fixed power for preview
+        isPointInPolygon,
+        exclusions: [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview],
+        gridSpacingPercent // Pass density to algorithm
+      });
+      
+      console.log('🔵 PREVIEW: Generated', previewAntennas.length, 'preview antennas');
+      setPreviewAntennas(previewAntennas);
+    } catch (error) {
+      console.error('🔵 PREVIEW: Error in preview:', error);
+      setPreviewAntennas([]);
+    }
+  };
+
+  // Don't automatically update preview when sliders change
+  // Let user explicitly trigger preview via Auto Place button
+  // This prevents unwanted preview antennas from appearing
+  /*
+  useEffect(() => {
+    // Only show preview if no actual antennas are placed
+    if (antennas.length === 0) {
+      updateAntennaPreview();
+    } else {
+      setPreviewAntennas([]); // Clear preview when antennas exist
+    }
+  }, [antennaRange, antennaDensity, savedAreas, currentArea, perimeter, scale, holes, manualHoles, savedExclusions, autoHolesPreview, antennas.length]);
+  */
+
+  // Don't automatically show preview when switching to antenna mode
+  // Let user explicitly trigger preview via Auto Place or other actions
+  useEffect(() => {
+    if (mode === 'antenna' && antennas.length === 0) {
+      console.log('🔵 MODE: Switched to antenna mode, clearing any existing preview');
+      setPreviewAntennas([]); // Clear preview instead of showing it
+    }
+  }, [mode]);
+
   function findClosestVertexIndex(p: Point, poly: Point[]) {
     let best = -1, bd = Infinity;
     for (let i=0;i<poly.length;i++) { const d = distance(p, poly[i]); if (d < bd) { bd = d; best = i; } }
@@ -1733,7 +2275,17 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     const ha = o.holes.reduce((s,h)=> s + (h.length>=3 ? calculateArea(h) : 0), 0);
     return { id: o.id, name: o.name || 'Object', gross: a, holes: ha, net: Math.max(0, a - ha) };
   });
-  const consolidatedTotal = selections.reduce((s, it) => s + it.value, 0);
+  
+  // Define area summaries based on saved areas
+  const areaSummaries = areas.map((area, index) => ({
+    label: `Area ${index + 1}`,
+    value: area.area || 0
+  }));
+  
+  // Calculate total from both manual selections and saved areas
+  const manualTotal = selections.reduce((s, it) => s + it.value, 0);
+  const savedAreasTotal = areaSummaries.reduce((s, it) => s + it.value, 0);
+  const consolidatedTotal = manualTotal + savedAreasTotal;
 
   const content = (
     <div className="flex flex-col relative h-full min-h-0">
@@ -1765,16 +2317,34 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
           </button>
           <button type="button"
             onClick={() => {
+              console.log('🟥 EXCLUDE BUTTON: Current mode =', mode);
               if (mustCalibrate) { setMode('calibrate'); return; }
-              if (mode === 'exclude' || mode === 'manual-exclude') { setMode('select'); return; }
-              // Choose exclude mode based on context: if a perimeter exists, draw holes inside it; else manual session
-              if (perimeter && perimeter.length >= 3) setMode('exclude'); else setMode('manual-exclude');
+              if (mode === 'exclude' || mode === 'manual-exclude') { 
+                console.log('🟥 EXCLUDE BUTTON: Switching back to select mode');
+                setMode('select'); 
+                return; 
+              }
+              // Always use manual-exclude mode for consistent polygon-style exclusion selection
+              console.log('🟥 EXCLUDE BUTTON: Switching to manual-exclude mode');
+              setMode('manual-exclude');
             }}
             disabled={mustCalibrate}
             className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 ${ (mode==='exclude' || mode==='manual-exclude') ? 'bg-white text-red-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'}`}
-            title="Draw exclusions manually"
+            title="Draw exclusion zones (polygon selection like areas)"
           >
             Exclude
+          </button>
+          <button type="button"
+            onClick={() => { if (mustCalibrate) { setMode('calibrate'); return; } setMode('antenna'); }}
+            disabled={mustCalibrate}
+            className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 ${
+              mode === 'antenna' 
+                ? 'bg-white text-green-600 shadow-sm' 
+                : 'bg-white/20 text-white hover:bg-white/30'
+            }`}
+            title="Place and manage antennas"
+          >
+            Antennas
           </button>
           <button type="button"
             onClick={addSelection}
@@ -1873,10 +2443,170 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
           </button>
         </div>
         
+        {/* Antenna Controls */}
+        {mode === 'antenna' && (
+          <div className="flex items-center space-x-3 mt-3 p-3 bg-white/10 rounded-lg backdrop-blur-sm">
+            <div className="text-white text-sm font-medium">
+              📡 <strong>Antenna Mode</strong> • Click to place • Drag to move • Ctrl+Click to select • Alt+Click to delete
+            </div>
+            
+            <SmartAutoPlaceButton 
+              onClick={() => {
+                console.log('Auto Place clicked with data:', {
+                  perimeter: perimeter?.length,
+                  scale,
+                  currentArea: currentArea.length,
+                  savedAreas: savedAreas.length,
+                  antennaRange,
+                  antennaDensity
+                });
+                
+                if (!scale) {
+                  alert('Please set a scale first by calibrating the distance or area.');
+                  return;
+                }
+                
+                // Determine which areas to use for antenna placement
+                let areasToUse = [];
+                if (perimeter && perimeter.length >= 3) {
+                  areasToUse = [perimeter];
+                } else if (currentArea.length >= 3) {
+                  areasToUse = [currentArea];
+                } else if (savedAreas.length > 0) {
+                  areasToUse = savedAreas;
+                } else {
+                  alert('Please select an area first or draw a perimeter for antenna placement.');
+                  return;
+                }
+                
+                console.log('🟩 SMART PLACE: Placing antennas in areas:', areasToUse.length);
+                console.log('🟩 SMART PLACE: holes =', holes.length, holes);
+                console.log('🟩 SMART PLACE: manualHoles =', manualHoles.length, manualHoles);
+                console.log('🟩 SMART PLACE: savedExclusions =', savedExclusions.length, savedExclusions);
+                console.log('🟩 SMART PLACE: autoHolesPreview =', autoHolesPreview.length, autoHolesPreview);
+                
+                // Debug: log the actual exclusion zone coordinates
+                const allExclusions = [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview];
+                console.log('🟩 SMART PLACE: ALL EXCLUSIONS DETAILED:', allExclusions.map((exc, i) => ({
+                  index: i,
+                  points: exc.length,
+                  coordinates: exc.length > 0 ? exc.slice(0, 3).map(p => `(${p.x?.toFixed(1) || 'undefined'}, ${p.y?.toFixed(1) || 'undefined'})`) : [],
+                  firstPoint: exc[0]
+                })));
+                console.log('🟩 SMART PLACE: Total exclusions being passed =', allExclusions.length);
+                
+                // Generate antennas directly (don't rely on preview)
+                const placedAntennas = simpleAutoPlaceAntennas({
+                  savedAreas: areasToUse,
+                  scale,
+                  defaultAntennaRange: antennaRange,
+                  defaultAntennaPower: 50, // Fixed power as we removed power controls
+                  isPointInPolygon,
+                  exclusions: allExclusions,
+                  gridSpacingPercent: antennaDensity
+                });
+                
+                if (placedAntennas.length > 0) {
+                  pushHistory();
+                  setAntennas(placedAntennas);
+                  setSelectedAntennaId(null);
+                  setPreviewAntennas([]); // Clear any existing preview
+                  console.log('🟩 SMART PLACE: Placed', placedAntennas.length, 'antennas');
+                } else {
+                  alert('No antennas could be placed. Check your area selection and exclusion zones.');
+                }
+              }}
+              perimeter={perimeter}
+              savedAreas={savedAreas}
+              objects={objects}
+              selection={currentArea.length > 0 ? currentArea : null}
+              scale={scale}
+            />
+            
+            <button
+              onClick={() => {
+                console.log('Coverage button clicked, current state:', showCoverage);
+                setShowCoverage(!showCoverage);
+                // Remove forced redraw - let React handle it naturally
+              }}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                showCoverage 
+                  ? 'bg-green-500 text-white shadow-sm' 
+                  : 'bg-white/20 text-white hover:bg-white/30'
+              }`}
+            >
+              Coverage
+            </button>
+            
+            <button
+              onClick={() => {
+                console.log('Boundaries button clicked, current state:', showRadiusBoundary);
+                setShowRadiusBoundary(!showRadiusBoundary);
+                // Let React handle redraw naturally
+              }}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                showRadiusBoundary 
+                  ? 'bg-blue-500 text-white shadow-sm' 
+                  : 'bg-white/20 text-white hover:bg-white/30'
+              }`}
+            >
+              Boundaries
+            </button>
+            
+            <div className="flex items-center space-x-2 text-white text-sm">
+              <span>Radius:</span>
+              <input
+                type="range"
+                min="3"
+                max="15"
+                step="0.5"
+                value={antennaRange}
+                onChange={(e) => setAntennaRange(parseFloat(e.target.value))}
+                className="w-20"
+              />
+              <input
+                type="number"
+                min="1"
+                max="100"
+                step="0.1"
+                value={antennaRange}
+                onChange={(e) => setAntennaRange(parseFloat(e.target.value) || 5)}
+                className="w-12 px-1 py-0.5 rounded bg-white/20 text-white text-center text-xs border border-white/30 focus:border-white/50 focus:outline-none"
+              />
+              <span>m</span>
+            </div>
+            
+            <button
+              onClick={() => {
+                console.log('Clearing antennas...');
+                pushHistory();
+                setAntennas([]);
+                setSelectedAntennaId(null);
+                // No need for setTimeout - useEffect will handle redraw
+              }}
+              className="bg-red-500/80 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-red-500 transition-all"
+            >
+              Clear Antennas
+            </button>
+            
+            {antennas.length > 0 && (
+              <div className="text-white/90 text-sm bg-white/10 px-3 py-1.5 rounded-lg backdrop-blur-sm">
+                <span className="font-medium">{antennas.length}</span> antenna{antennas.length !== 1 ? 's' : ''} placed
+              </div>
+            )}
+            
+            {selectedAntennaId && (
+              <div className="text-white/80 text-xs bg-white/10 px-2 py-1 rounded">
+                Selected: {antennas.find(a => a.id === selectedAntennaId)?.id.slice(-4)}
+              </div>
+            )}
+          </div>
+        )}
+        
         <div className="flex items-center space-x-2">
       {scale ? (
             <div className="px-3 py-1.5 bg-white/20 text-white rounded-lg text-sm backdrop-blur-sm">
-        📏 Scale: 1px = {fmtScale(scale)} {scaleUnit}
+        📏 Scale: 1cm = {(scale * 10).toFixed(1)}m
               {isFullscreen && scaleConfidence !== null && (
                 <span className="ml-2 inline-flex items-center text-xs px-2 py-0.5 rounded bg-white/30 text-white">
                   {Math.round(scaleConfidence*100)}%{scaleMethod ? ` • ${scaleMethod}` : ''}
@@ -1885,11 +2615,6 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
             </div>
           ) : (
             <div className="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm">⚠️ No Scale Set</div>
-          )}
-          {scale && selections.length > 0 && (
-            <div className="px-3 py-1.5 bg-white/20 text-white rounded-lg text-sm backdrop-blur-sm">
-        Σ Total: {consolidatedTotal.toFixed(2)} m²
-            </div>
           )}
         </div>
       </div>
@@ -2012,7 +2737,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   {/* Area Results - Professional */}
   {(selections.length > 0) && (
         isFullscreen ? (
-          <div className="absolute right-4 top-24 bottom-4 w-96 z-[1100] p-4 bg-white/95 border rounded-lg shadow overflow-auto">
+          <div className="absolute right-4 top-32 bottom-4 w-80 z-[1100] p-4 bg-white/95 border rounded-lg shadow overflow-auto">
             <div className="mb-4">
               <h3 className="font-semibold text-gray-900 mb-2">Summary</h3>
               {/* Unified selections list */}
