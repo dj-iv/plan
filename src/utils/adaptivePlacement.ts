@@ -66,8 +66,9 @@ export function adaptivePlacementForArea(area: Point[], opts: AdaptiveOptions): 
   const {
     rangeInPixels, antennaRangeMeters, scale, exclusions, isPointInPolygon,
     wallBuffer, exclusionBuffer, tolerancePercent=1, cellSizePixelsCap,
-    packingEfficiency=0.65, safetyFactor=1.25, edgePenaltyWeight=0.3,
-    overlapPenaltyWeight=0.6, debug=false
+    packingEfficiency=0.65, safetyFactor=2.5, edgePenaltyWeight=0.3,
+    overlapPenaltyWeight=0.6, debug=false,
+    gridSpacingPercent = 50,
   } = opts;
 
   if (area.length < 3) return { points: [], coveragePercent: 0, uncoveredCount: 0, totalCells: 0 };
@@ -88,7 +89,7 @@ export function adaptivePlacementForArea(area: Point[], opts: AdaptiveOptions): 
   // Candidate generation (initial grid spacing ~0.7R)
   const candidates: Point[] = [];
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity; for(const p of area){ if(p.x<minX)minX=p.x; if(p.x>maxX)maxX=p.x; if(p.y<minY)minY=p.y; if(p.y>maxY)maxY=p.y; }
-  const spacing = rangeInPixels * 0.7;
+  const spacing = rangeInPixels * (gridSpacingPercent / 100);
   for (let x=minX; x<=maxX; x+=spacing) {
     for (let y=minY; y<=maxY; y+=spacing) {
       const pt = {x,y};

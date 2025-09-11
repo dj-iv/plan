@@ -432,7 +432,7 @@ export function simpleAutoPlaceAntennas(options: AutoPlaceOptions): Antenna[] {
     // WALL-LIKE EXCLUSION AVOIDANCE - Treat exclusions like walls
     // Antennas cannot be placed inside, but coverage can extend into exclusion zones
     const exclusionBuffer = 15; // Reduced buffer to allow closer antenna placement
-    const wallBuffer = 60; // Significantly reduced wall buffer - allow antennas closer to edges
+    const wallBuffer = 10; // Significantly reduced wall buffer - allow antennas closer to edges
     
     console.log(`🔴 WALL-LIKE buffers: exclusion=${exclusionBuffer.toFixed(1)}px (keep antennas out), wall=${wallBuffer.toFixed(1)}px`);
 
@@ -488,6 +488,7 @@ export function simpleAutoPlaceAntennas(options: AutoPlaceOptions): Antenna[] {
             wallBuffer,
             exclusionBuffer,
             tolerancePercent,
+            gridSpacingPercent,
             debug: false
         });
         const areaAntennas: Antenna[] = result.points.map((pos, index) => ({

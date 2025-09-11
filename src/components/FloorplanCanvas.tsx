@@ -1776,7 +1776,8 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
         defaultAntennaPower: 50, // Fixed power value
         isPointInPolygon,
         exclusions: [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview],
-        gridSpacingPercent: antennaDensity // Pass density to algorithm
+        gridSpacingPercent: antennaDensity, // Pass density to algorithm
+        placementMode: 'adaptive',
       });
       
       setAntennas(newAntennas);
@@ -2503,7 +2504,8 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
                   defaultAntennaPower: 50, // Fixed power as we removed power controls
                   isPointInPolygon,
                   exclusions: allExclusions,
-                  gridSpacingPercent: antennaDensity
+                  gridSpacingPercent: antennaDensity,
+                  placementMode: 'adaptive',
                 });
                 
                 if (placedAntennas.length > 0) {
