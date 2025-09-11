@@ -1,10 +1,111 @@
-'use client';
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import SmartAutoPlaceButton from './SmartAutoPlaceButton';
 import useFixAutoPlaceButton from '@/hooks/useFixAutoPlaceButton';
-import { simpleAutoPlaceAntennas } from '@/utils/antennaUtils';
+// Built-in deterministic full-coverage placement (self-contained to avoid module export issues)
+type FCAntenna = { id:string; position: {x:number;y:number}; range:number; power?:number };
+interface FullCoverageOpts {
+  areas: Point[][];
+  scale: number; // meters per pixel
+  rangeMeters: number;
+  power: number;
+  exclusions: Point[][];
+  isPointInPolygon: (p:Point, poly:Point[])=>boolean;
+}
+function generateFullCoverageAntennas(opts: FullCoverageOpts): FCAntenna[] {
+  const { areas, scale, rangeMeters, power, exclusions, isPointInPolygon } = opts;
+  if (!areas?.length || !scale || scale <= 0 || !rangeMeters) return [];
+  const rPx = rangeMeters / scale; // radius in pixels
+  const baseSpacing = rPx * 0.75; // denser seeding to avoid missed edges
+  const antennas: FCAntenna[] = [];
+  const isExcluded = (pt:Point) => exclusions.some(ex => ex.length>=3 && isPointInPolygon(pt, ex));
+
+  // Area & theoretical minimum for diagnostics
+  const polygonAreaPx = areas.reduce((sum, poly) => {
+    if (poly.length < 3) return sum;
+    let a = 0; for (let i=0;i<poly.length;i++){ const j=(i+1)%poly.length; a += poly[i].x*poly[j].y - poly[j].x*poly[i].y; }
+    return sum + Math.abs(a/2);
+  }, 0);
+  const polygonAreaM2 = polygonAreaPx * scale * scale;
+  const antennaDiscArea = Math.PI * rangeMeters * rangeMeters;
+  const theoreticalMin = polygonAreaM2 / antennaDiscArea;
+  const hardCap = Math.min(5000, Math.ceil(theoreticalMin * 3.0));
+  console.log(`COVERAGE METRICS: area=${polygonAreaM2.toFixed(1)}m² radius=${rangeMeters}m theoreticalMin≈${theoreticalMin.toFixed(1)} hardCap=${hardCap}`);
+
+  // 1. Seed grid (staggered) for each polygon
+  areas.forEach((poly, areaIdx) => {
+    if (poly.length < 3) return;
+    const minX = Math.min(...poly.map(p=>p.x));
+    const maxX = Math.max(...poly.map(p=>p.x));
+    const minY = Math.min(...poly.map(p=>p.y));
+    const maxY = Math.max(...poly.map(p=>p.y));
+    let row = 0;
+    for (let y = minY - rPx; y <= maxY + rPx; y += baseSpacing, row++) {
+      const xOffset = (row % 2 === 0) ? 0 : baseSpacing / 2;
+      for (let x = minX - rPx; x <= maxX + rPx; x += baseSpacing) {
+        const pt = { x: x + xOffset, y };
+        if (!isPointInPolygon(pt, poly) || isExcluded(pt)) continue;
+        // prevent super-close duplicates
+        let tooClose = false;
+        for (const a of antennas) {
+          const dx=a.position.x-pt.x, dy=a.position.y-pt.y; if (dx*dx+dy*dy < (rPx*0.35)*(rPx*0.35)) { tooClose = true; break; }
+        }
+        if (tooClose) continue;
+        antennas.push({ id:`seed-${areaIdx}-${antennas.length}`, position: pt, range: rangeMeters, power });
+        if (antennas.length > 1500) { console.warn('Hard cap reached during seeding'); return; }
+      }
+    }
+  });
+
+  // 2. Iterative gap fill using farthest-point sampling
+  const rSq = rPx * rPx;
+  // Build sample set (shared across polygons)
+  const samples: Point[] = [];
+  const sampleStep = rPx * 0.4; // finer step for accuracy
+  areas.forEach(poly => {
+    const minX = Math.min(...poly.map(p=>p.x));
+    const maxX = Math.max(...poly.map(p=>p.x));
+    const minY = Math.min(...poly.map(p=>p.y));
+    const maxY = Math.max(...poly.map(p=>p.y));
+    for (let y = minY; y <= maxY; y += sampleStep) {
+      for (let x = minX; x <= maxX; x += sampleStep) {
+        const pt = {x,y};
+        if (!isPointInPolygon(pt, poly) || isExcluded(pt)) continue;
+        samples.push(pt);
+      }
+    }
+  });
+  if (!samples.length) return antennas;
+
+  const coverageThreshold = (rangeMeters < 5 ? 0.9995 : 0.997); // stricter for small radii
+  let iteration = 0;
+  while (iteration < 5000) { // generous cap for convergence
+    iteration++;
+    let uncoveredCount = 0;
+    let farthest: Point | null = null;
+    let farthestDistSq = -1;
+    for (const s of samples) {
+      let covered = false; let bestDistSq = Infinity;
+      for (const a of antennas) {
+        const dx = a.position.x - s.x; const dy = a.position.y - s.y; const d2 = dx*dx+dy*dy;
+        if (d2 <= rSq) { covered = true; break; }
+        if (d2 < bestDistSq) bestDistSq = d2;
+      }
+      if (!covered) {
+        uncoveredCount++;
+        if (bestDistSq > farthestDistSq) { farthestDistSq = bestDistSq; farthest = s; }
+      }
+    }
+    const coveredRatio = 1 - (uncoveredCount / samples.length);
+    console.log(`COVERAGE PASS ${iteration}: covered ${(coveredRatio*100).toFixed(3)}% antennas=${antennas.length} uncovered=${uncoveredCount}`);
+    if (coveredRatio >= coverageThreshold || !farthest) break;
+    antennas.push({ id:`gap-${antennas.length}`, position: farthest, range: rangeMeters, power });
+    if (antennas.length > hardCap) { console.warn('Global hard cap reached'); break; }
+  }
+  console.log(`FULL COVERAGE FINAL: samples=${samples.length} antennas=${antennas.length} theoreticalMin≈${theoreticalMin.toFixed(1)}`);
+  return antennas;
+}
 // Trim now runs in a Web Worker at /workers/trim-opencv.js to avoid blocking UI
 
 interface FloorplanCanvasProps {
@@ -131,9 +232,11 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   }, []);
   const [isDraggingAntenna, setIsDraggingAntenna] = useState<boolean>(false);
   const [isPlacingAntennas, setIsPlacingAntennas] = useState<boolean>(false); // Flag for auto-placement in progress
-  const [antennaRange, setAntennaRange] = useState<number>(5); // Default 5m range (changed from 25m)
+  const [antennaRange, setAntennaRange] = useState<number>(8); // Default 8m range for better coverage
   const [antennaDensity, setAntennaDensity] = useState<number>(130); // Default density 130% (grid spacing percentage)
   const [previewAntennas, setPreviewAntennas] = useState<Antenna[]>([]); // For live preview
+  // When true, changing the radius slider will only resize existing antenna circles (visual coverage) without re-placement.
+  const [lockPositions, setLockPositions] = useState<boolean>(true);
   
   // Redraw canvas when antennas, preview, or coverage settings change
   useEffect(() => {
@@ -1769,15 +1872,18 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     console.log('🟦 AUTO PLACE: Total exclusions being passed =', [...holes, ...manualHoles, ...savedExclusions].length);
     
     try {
-      const newAntennas = simpleAutoPlaceAntennas({
-        savedAreas,
+      // Determine active areas preference: perimeter > saved > current
+      let activeAreas: Point[][] = [];
+      if (perimeter && perimeter.length >=3) activeAreas = [perimeter];
+      else if (savedAreas.length) activeAreas = savedAreas;
+      else if (currentArea.length >=3) activeAreas = [currentArea];
+      const newAntennas = generateFullCoverageAntennas({
+        areas: activeAreas,
         scale,
-        defaultAntennaRange: antennaRange, // Use current range setting
-        defaultAntennaPower: 50, // Fixed power value
+        rangeMeters: antennaRange,
+        power: 50,
         isPointInPolygon,
-        exclusions: [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview],
-        gridSpacingPercent: antennaDensity, // Pass density to algorithm
-        placementMode: 'adaptive',
+        exclusions: [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview]
       });
       
       setAntennas(newAntennas);
@@ -1835,18 +1941,14 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     }
 
     try {
-      // Use current settings to generate preview
-      const gridSpacingPercent = antennaDensity; // 100-200% range
-      console.log('🔵 PREVIEW: Generating preview with density =', gridSpacingPercent);
-      
-      const previewAntennas = simpleAutoPlaceAntennas({
-        savedAreas: areasToUse,
+      console.log('🔵 PREVIEW: Generating preview (full coverage algorithm)');
+      const previewAntennas = generateFullCoverageAntennas({
+        areas: areasToUse,
         scale,
-        defaultAntennaRange: antennaRange,
-        defaultAntennaPower: 50, // Fixed power for preview
+        rangeMeters: antennaRange,
+        power: 50,
         isPointInPolygon,
-        exclusions: [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview],
-        gridSpacingPercent // Pass density to algorithm
+        exclusions: [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview]
       });
       
       console.log('🔵 PREVIEW: Generated', previewAntennas.length, 'preview antennas');
@@ -2497,15 +2599,13 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
                 console.log('🟩 SMART PLACE: Total exclusions being passed =', allExclusions.length);
                 
                 // Generate antennas directly (don't rely on preview)
-                const placedAntennas = simpleAutoPlaceAntennas({
-                  savedAreas: areasToUse,
+                const placedAntennas = generateFullCoverageAntennas({
+                  areas: areasToUse,
                   scale,
-                  defaultAntennaRange: antennaRange,
-                  defaultAntennaPower: 50, // Fixed power as we removed power controls
+                  rangeMeters: antennaRange,
+                  power: 50,
                   isPointInPolygon,
                   exclusions: allExclusions,
-                  gridSpacingPercent: antennaDensity,
-                  placementMode: 'adaptive',
                 });
                 
                 if (placedAntennas.length > 0) {
@@ -2559,23 +2659,52 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
               <span>Radius:</span>
               <input
                 type="range"
-                min="3"
-                max="15"
+                min="1"
+                max="30"
                 step="0.5"
                 value={antennaRange}
-                onChange={(e) => setAntennaRange(parseFloat(e.target.value))}
-                className="w-20"
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  setAntennaRange(v);
+                  if (antennas.length > 0 && lockPositions) {
+                    // Just resize coverage (non-destructive)
+                    setAntennas(prev => prev.map(a => ({ ...a, range: v })));
+                  }
+                  if (previewAntennas.length > 0) {
+                    setPreviewAntennas(prev => prev.map(a => ({ ...a, range: v })));
+                  }
+                }}
+                className="w-24"
               />
               <input
                 type="number"
                 min="1"
-                max="100"
+                max="50"
                 step="0.1"
                 value={antennaRange}
-                onChange={(e) => setAntennaRange(parseFloat(e.target.value) || 5)}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value) || 1;
+                  setAntennaRange(v);
+                  if (antennas.length > 0 && lockPositions) {
+                    setAntennas(prev => prev.map(a => ({ ...a, range: v })));
+                  }
+                  if (previewAntennas.length > 0) {
+                    setPreviewAntennas(prev => prev.map(a => ({ ...a, range: v })));
+                  }
+                }}
                 className="w-12 px-1 py-0.5 rounded bg-white/20 text-white text-center text-xs border border-white/30 focus:border-white/50 focus:outline-none"
               />
               <span>m</span>
+              {antennas.length > 0 && (
+                <label className="flex items-center space-x-1 ml-2 text-xs cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={lockPositions}
+                    onChange={(e) => setLockPositions(e.target.checked)}
+                  />
+                  <span>{lockPositions ? 'Resize only' : 'Recalc on next placement'}</span>
+                </label>
+              )}
             </div>
             
             <button

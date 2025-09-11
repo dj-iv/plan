@@ -1,5 +1,8 @@
 'use client';
 
+// SENTINEL: Ensure this TS module is the one being bundled (watch for this message once per HMR load)
+console.log('[antennaUtils.ts] Module loaded – using hex full coverage implementation');
+
 // Basic interfaces
 interface Point {
   x: number;
@@ -383,151 +386,309 @@ function distanceFromPointToLine(point: Point, lineStart: Point, lineEnd: Point)
 }
 import { adaptivePlacementForArea } from './adaptivePlacement';
 
-export function simpleAutoPlaceAntennas(options: AutoPlaceOptions): Antenna[] {
-  const { savedAreas, scale, defaultAntennaRange, defaultAntennaPower, isPointInPolygon, exclusions = [], gridSpacingPercent = 130, canvasToImageScale = 1, placementMode = 'strategic', tolerancePercent = 1 } = options;
-  
-  console.log("🔴 SMART ANTENNA PLACEMENT ALGORITHM WITH EXCLUSION AVOIDANCE");
-  console.log("🔴 Areas:", savedAreas.length);
-  console.log("🔴 Scale:", scale);
-  console.log("🔴 Default Range:", defaultAntennaRange);
-  console.log("🔴 Canvas to Image Scale:", canvasToImageScale);
-  console.log("🔴 Exclusions received:", exclusions.length);
-  
-  // CRITICAL DEBUG: Log each exclusion zone in detail
-  exclusions.forEach((exclusion, i) => {
-    console.log(`🔴 Exclusion ${i}:`, {
-      points: exclusion.length,
-      coordinates: exclusion.map(p => `(${p.x.toFixed(1)}, ${p.y.toFixed(1)})`),
-      bounds: exclusion.length > 0 ? {
-        minX: Math.min(...exclusion.map(p => p.x)).toFixed(1),
-        maxX: Math.max(...exclusion.map(p => p.x)).toFixed(1),
-        minY: Math.min(...exclusion.map(p => p.y)).toFixed(1),
-        maxY: Math.max(...exclusion.map(p => p.y)).toFixed(1)
-      } : 'no points'
-    });
-  });
-  
-  if (exclusions.length === 0) {
-    console.log("🔴 WARNING: NO EXCLUSION ZONES DETECTED - antennas will not avoid any areas!");
-  }
-  
-  const antennas: Antenna[] = [];
-  
-  try {
-    if (!savedAreas || savedAreas.length === 0) {
-      console.error("🔴 No areas provided for antenna placement");
-      return [];
-    }
-    
-    if (!scale || scale <= 0) {
-      console.error("🔴 Invalid scale for antenna placement");
-      return [];
-    }
-    
-    const antennaRangeMeters = defaultAntennaRange || 6;
-    const rangeInPixels = antennaRangeMeters / scale;
-    
-    console.log(`🔴 Using range: ${antennaRangeMeters}m = ${rangeInPixels.toFixed(2)} pixels`);
-    
-    // WALL-LIKE EXCLUSION AVOIDANCE - Treat exclusions like walls
-    // Antennas cannot be placed inside, but coverage can extend into exclusion zones
-    const exclusionBuffer = 15; // Reduced buffer to allow closer antenna placement
-    const wallBuffer = 10; // Significantly reduced wall buffer - allow antennas closer to edges
-    
-    console.log(`🔴 WALL-LIKE buffers: exclusion=${exclusionBuffer.toFixed(1)}px (keep antennas out), wall=${wallBuffer.toFixed(1)}px`);
+// Deterministic full-coverage hex tiling with fixed radius
+function hexFullCoveragePlacement(area: Point[], rangePx: number, isPointInPolygon: (p:Point, poly:Point[])=>boolean, exclusions: Point[][]): Point[] {
+  const results: Point[] = [];
+  if (area.length < 3) return results;
+  const minX = Math.min(...area.map(p=>p.x));
+  const maxX = Math.max(...area.map(p=>p.x));
+  const minY = Math.min(...area.map(p=>p.y));
+  const maxY = Math.max(...area.map(p=>p.y));
 
-  savedAreas.forEach((area, areaIndex) => {
-      if (area.length < 3) {
-        console.log(`🔴 Skipping area ${areaIndex} - insufficient points`);
-        return;
+  // Hex grid spacing: horizontal = r*sqrt(3), vertical = 1.5*r gives overlap (~13%) ensuring no gaps.
+  const r = rangePx; // radius in pixels (fixed)
+  const horiz = r * Math.sqrt(3) * 0.9; // slight reduction to increase overlap
+  const vert = r * 1.5 * 0.9; // same overlap factor
+
+  let row = 0;
+  for (let y = minY - r; y <= maxY + r; y += vert, row++) {
+    const xOffset = (row % 2 === 0) ? 0 : horiz / 2;
+    for (let x = minX - r; x <= maxX + r; x += horiz) {
+      const px = x + xOffset;
+      const point = { x: px, y };
+      // Quick reject: bounding box test already satisfied
+      if (!isPointInPolygon(point, area)) continue;
+      // Exclusions
+      let blocked = false;
+      for (const ex of exclusions) {
+        if (ex.length >=3 && isPointInPolygon(point, ex)) { blocked = true; break; }
       }
-      
-      console.log(`🔴 Processing Area ${areaIndex} with ${area.length} points`);
-      
-      // Get area boundaries
-      const bounds = {
-        minX: Math.min(...area.map(p => p.x)),
-        maxX: Math.max(...area.map(p => p.x)),
-        minY: Math.min(...area.map(p => p.y)),
-        maxY: Math.max(...area.map(p => p.y))
-      };
-      
-      const areaWidth = bounds.maxX - bounds.minX;
-      const areaHeight = bounds.maxY - bounds.minY;
-      
-      console.log(`🔴 Area ${areaIndex}: ${areaWidth.toFixed(1)} x ${areaHeight.toFixed(1)} pixels`);
-      console.log(`🔴 Area ${areaIndex} bounds:`, bounds);
-      
-      // Create a much smaller safe zone deep inside the area
-      const safeZone = {
-        minX: bounds.minX + wallBuffer,
-        maxX: bounds.maxX - wallBuffer,
-        minY: bounds.minY + wallBuffer,
-        maxY: bounds.maxY - wallBuffer
-      };
-      
-      // Skip if safe zone is too small
-      if (safeZone.minX >= safeZone.maxX || safeZone.minY >= safeZone.maxY) {
-        console.log(`🔴 Area ${areaIndex}: Safe zone too small - skipping`);
-        return;
-      }
-      
-      const safeWidth = safeZone.maxX - safeZone.minX;
-      const safeHeight = safeZone.maxY - safeZone.minY;
-      
-      console.log(`🔴 Area ${areaIndex}: Safe zone ${safeWidth.toFixed(1)} x ${safeHeight.toFixed(1)} pixels`);
-      
-      if (placementMode === 'adaptive') {
-        console.log(`🟢 ADAPTIVE: Starting adaptive placement for area ${areaIndex}`);
-        const result = adaptivePlacementForArea(area, {
-          rangeInPixels: rangeInPixels,
-            antennaRangeMeters: antennaRangeMeters,
-            scale,
-            exclusions,
-            isPointInPolygon,
-            wallBuffer,
-            exclusionBuffer,
-            tolerancePercent,
-            gridSpacingPercent,
-            debug: false
-        });
-        const areaAntennas: Antenna[] = result.points.map((pos, index) => ({
-          id: `antenna-${antennas.length + index + 1}`,
-          position: { x: pos.x, y: pos.y },
-          range: antennaRangeMeters,
-          power: defaultAntennaPower
-        }));
-        antennas.push(...areaAntennas);
-        console.log(`🟢 ADAPTIVE: Area ${areaIndex} antennas=${areaAntennas.length} coverage=${result.coveragePercent.toFixed(2)}% uncoveredCells=${result.uncoveredCount}/${result.totalCells}`);
-      } else {
-        // Use existing strategic algorithm
-        console.log(`🟡 STRATEGIC: Switching to strategic placement for area ${areaIndex}`);
-        const strategicPositions = strategicAntennaPlacement(
-          area,
-          rangeInPixels,
-          exclusions,
-          isPointInPolygon,
-          wallBuffer,
-          exclusionBuffer
-        );
-        const areaAntennas: Antenna[] = strategicPositions.map((pos, index) => ({
-          id: `antenna-${antennas.length + index + 1}`,
-          position: { x: pos.x, y: pos.y },
-          range: antennaRangeMeters,
-          power: defaultAntennaPower
-        }));
-        antennas.push(...areaAntennas);
-        console.log(`🔴 Area ${areaIndex}: Final result: ${areaAntennas.length} antennas placed`);
-      }
-    });
-    
-    console.log(`🔴 SMART PLACEMENT COMPLETE: ${antennas.length} total antennas`);
-    return antennas;
-    
-  } catch (error) {
-    console.error("🔴 Error in simpleAutoPlaceAntennas:", error);
-    return [];
+      if (blocked) continue;
+      results.push(point);
+    }
   }
+  return results;
+}
+
+export function simpleAutoPlaceAntennas(options: AutoPlaceOptions): Antenna[] {
+  const { savedAreas, scale, defaultAntennaRange, defaultAntennaPower, isPointInPolygon, exclusions = [], gridSpacingPercent } = options;
+  if (!savedAreas?.length || !scale || scale <= 0) return [];
+  const rangeMeters = defaultAntennaRange || 6;
+  const rangePx = rangeMeters / scale;
+  const spacingFactor = (gridSpacingPercent && gridSpacingPercent > 0) ? (gridSpacingPercent/100) : 1.3; // default 130% of radius
+  const sampleSpacing = rangePx * spacingFactor;
+  console.log(`🧩 FULL COVERAGE (greedy) start range=${rangeMeters}m (${rangePx.toFixed(1)}px) spacingFactor=${spacingFactor.toFixed(2)}`);
+
+  const antennas: Antenna[] = [];
+
+  // Greedy coverage algorithm per area
+  savedAreas.forEach((poly, areaIdx) => {
+    if (!poly || poly.length < 3) return;
+    const minX = Math.min(...poly.map(p=>p.x));
+    const maxX = Math.max(...poly.map(p=>p.x));
+    const minY = Math.min(...poly.map(p=>p.y));
+    const maxY = Math.max(...poly.map(p=>p.y));
+
+    // Auto-tightening: if initial spacing too loose for tiny polygons, we iteratively reduce spacing
+    let currentSpacing = sampleSpacing;
+    let candidates: Point[] = [];
+    const maxTightenSteps = 3;
+    for (let tighten = 0; tighten <= maxTightenSteps; tighten++) {
+      candidates = [];
+      for (let y = minY; y <= maxY; y += currentSpacing) {
+        for (let x = minX; x <= maxX; x += currentSpacing) {
+          const pt = { x, y };
+          if (!isPointInPolygon(pt, poly)) continue;
+          let blocked = false;
+          for (const ex of exclusions) {
+            if (ex.length >=3 && isPointInPolygon(pt, ex)) { blocked = true; break; }
+          }
+            if (!blocked) candidates.push(pt);
+        }
+      }
+      // Heuristic: ensure at least some density; if too sparse (< 4) and polygon large, tighten spacing
+      if (candidates.length >= 4 || tighten === maxTightenSteps) break;
+      currentSpacing *= 0.75; // tighten
+    }
+    console.log(`🧩 Area ${areaIdx}: candidates=${candidates.length} (spacing=${currentSpacing.toFixed(1)}px)`);
+    if (!candidates.length) return;
+
+    // Track uncovered indices
+    const uncovered: number[] = candidates.map((_,i)=>i);
+
+    // Precompute neighbor lists for efficiency (indices of candidates within coverage radius)
+    const coverRadius = rangePx * 0.98; // slight reduction to minimize excessive overlap
+    const coverRadiusSq = coverRadius * coverRadius;
+    const neighborMap: number[][] = new Array(candidates.length);
+    for (let i=0;i<candidates.length;i++) {
+      const ci = candidates[i];
+      const neigh: number[] = [];
+      for (let j=0;j<candidates.length;j++) {
+        const cj = candidates[j];
+        const dx = ci.x - cj.x; const dy = ci.y - cj.y;
+        if (dx*dx + dy*dy <= coverRadiusSq) neigh.push(j);
+      }
+      neighborMap[i] = neigh;
+    }
+
+    // Greedy selection: each iteration pick candidate covering most uncovered points
+    let placedThisArea = 0;
+    const uncoveredSet = new Set(uncovered);
+    while (uncoveredSet.size > 0) {
+      let bestIdx = -1; let bestGain = -1;
+      // Evaluate a subset (heuristic) if very large for performance
+      const evalCandidates = uncoveredSet.size > 800 ? Array.from(uncoveredSet).filter((_,k)=> k % 3 === 0) : Array.from(uncoveredSet);
+      for (const idx of evalCandidates) {
+        let gain = 0;
+        for (const n of neighborMap[idx]) if (uncoveredSet.has(n)) gain++;
+        if (gain > bestGain) { bestGain = gain; bestIdx = idx; }
+      }
+      if (bestIdx === -1) break;
+      const p = candidates[bestIdx];
+      antennas.push({ id:`ant-${areaIdx}-${placedThisArea}`, position:{x:p.x,y:p.y}, range: rangeMeters, power: defaultAntennaPower });
+      placedThisArea++;
+      for (const n of neighborMap[bestIdx]) uncoveredSet.delete(n);
+      if (placedThisArea > 1000) { console.warn(`🧩 Area ${areaIdx}: safety stop at 1000 antennas`); break; }
+    }
+    console.log(`🧩 Area ${areaIdx}: placed ${placedThisArea} antennas (remaining uncovered=${uncoveredSet.size})`);
+
+    // Fallback: if uncoveredSet still quite large relative to candidate count, try a dense hex fill supplement
+    if (uncoveredSet.size > candidates.length * 0.15 && placedThisArea < 500) {
+      const remPoints = Array.from(uncoveredSet).map(i=>candidates[i]);
+      // Simple bounding box clustering: attempt a local hex sprinkle
+      const clusterRadius = rangePx * 3;
+      let clusterId = 0;
+      const unassigned = new Set(remPoints.map((_,i)=>i));
+      while (unassigned.size) {
+        const seedIndex = unassigned.values().next().value as number;
+        unassigned.delete(seedIndex);
+        const seed = remPoints[seedIndex];
+        // Collect nearby points
+        const cluster: Point[] = [seed];
+        for (const idx of Array.from(unassigned)) {
+          const p = remPoints[idx];
+            const dx = p.x - seed.x; const dy = p.y - seed.y;
+            if (dx*dx + dy*dy <= clusterRadius*clusterRadius) { cluster.push(p); unassigned.delete(idx); }
+        }
+        if (cluster.length) {
+          // Derive local bounds
+          const cMinX = Math.min(...cluster.map(p=>p.x));
+          const cMaxX = Math.max(...cluster.map(p=>p.x));
+          const cMinY = Math.min(...cluster.map(p=>p.y));
+          const cMaxY = Math.max(...cluster.map(p=>p.y));
+          const r = rangePx * 0.85; // tighter overlap locally
+          const horiz = r * Math.sqrt(3) * 0.85;
+          const vert = r * 1.5 * 0.85;
+          let row = 0; let added = 0;
+          for (let y = cMinY - r; y <= cMaxY + r; y += vert, row++) {
+            const xOffset = (row % 2 === 0) ? 0 : horiz / 2;
+            for (let x = cMinX - r; x <= cMaxX + r; x += horiz) {
+              const pt = { x: x + xOffset, y };
+              if (!isPointInPolygon(pt, poly)) continue;
+              let blocked = false; for (const ex of exclusions) { if (ex.length>=3 && isPointInPolygon(pt, ex)) { blocked = true; break; } }
+              if (blocked) continue;
+              // Skip if already covered by existing antenna within 0.9 * rangePx
+              const covered = antennas.some(a=> { const dx = a.position.x-pt.x; const dy = a.position.y-pt.y; return (dx*dx + dy*dy) <= (rangePx*0.9)*(rangePx*0.9); });
+              if (covered) continue;
+              antennas.push({ id:`ant-fb-${areaIdx}-${clusterId}-${added}`, position:{x:pt.x,y:pt.y}, range: rangeMeters, power: defaultAntennaPower });
+              added++; if (added > 200) break; // safety
+            }
+            if (added > 200) break;
+          }
+          if (added) console.log(`🧩 Area ${areaIdx}: fallback cluster ${clusterId} added ${added} antennas`);
+          clusterId++;
+          if (clusterId > 50) break;
+        }
+      }
+    }
+
+    // Optional fine gap fill with tighter sampling if still uncovered (skip if large)
+    if (placedThisArea < 200 && savedAreas.length === 1) {
+      const gapAnts = fillCoverageGaps(antennas.filter(a=>a.id.startsWith(`ant-${areaIdx}-`)), poly, isPointInPolygon, exclusions, rangePx, rangeMeters, defaultAntennaPower).map((a,i)=> ({...a, id:`ant-gap-${areaIdx}-${i}`}));
+      antennas.push(...gapAnts);
+      if (gapAnts.length) console.log(`🧩 Area ${areaIdx}: gap fill added ${gapAnts.length} antennas`);
+    }
+  });
+  console.log(`🧩 TOTAL antennas placed: ${antennas.length}`);
+  return antennas;
+}
+
+// Provide default export for wildcard import fallbacks
+export default { simpleAutoPlaceAntennas };
+
+// Gap-filling function to ensure complete coverage
+function fillCoverageGaps(
+  existingAntennas: Antenna[],
+  area: Point[],
+  isPointInPolygon: (point: Point, polygon: Point[]) => boolean,
+  exclusions: Point[][],
+  rangeInPixels: number,
+  antennaRangeMeters: number,
+  defaultAntennaPower: number
+): Antenna[] {
+  console.log("🟦 GAP FILLING: Starting gap analysis");
+  
+  const gapAntennas: Antenna[] = [];
+  const bounds = {
+    minX: Math.min(...area.map(p => p.x)),
+    maxX: Math.max(...area.map(p => p.x)),
+    minY: Math.min(...area.map(p => p.y)),
+    maxY: Math.max(...area.map(p => p.y))
+  };
+  
+  // Create a fine sampling grid to detect gaps
+  const sampleSpacing = rangeInPixels * 0.4; // Fine sampling
+  const cols = Math.ceil((bounds.maxX - bounds.minX) / sampleSpacing);
+  const rows = Math.ceil((bounds.maxY - bounds.minY) / sampleSpacing);
+  
+  console.log(`🟦 GAP FILLING: Scanning ${cols}x${rows} sample points`);
+  
+  let uncoveredPoints: Point[] = [];
+  
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const x = bounds.minX + (col * sampleSpacing);
+      const y = bounds.minY + (row * sampleSpacing);
+      const point = { x, y };
+      
+      // Must be in area
+      if (!isPointInPolygon(point, area)) continue;
+      
+      // Must not be in exclusion
+      let inExclusion = false;
+      for (const exclusion of exclusions) {
+        if (exclusion.length >= 3 && isPointInPolygon(point, exclusion)) {
+          inExclusion = true;
+          break;
+        }
+      }
+      if (inExclusion) continue;
+      
+      // Check if covered by any existing antenna
+      let covered = false;
+      for (const antenna of existingAntennas) {
+        const distance = Math.sqrt(
+          Math.pow(antenna.position.x - x, 2) + Math.pow(antenna.position.y - y, 2)
+        );
+        if (distance <= rangeInPixels * 0.95) { // 95% coverage requirement
+          covered = true;
+          break;
+        }
+      }
+      
+      if (!covered) {
+        uncoveredPoints.push(point);
+      }
+    }
+  }
+  
+  console.log(`🟦 GAP FILLING: Found ${uncoveredPoints.length} uncovered points`);
+  
+  // Cluster uncovered points and place antennas at cluster centers
+  while (uncoveredPoints.length > 0) {
+    // Find the point that would cover the most uncovered points
+    let bestPoint: Point | null = null;
+    let bestCoverage = 0;
+    let bestCoveredIndices: number[] = [];
+    
+    for (const candidate of uncoveredPoints) {
+      const coveredIndices: number[] = [];
+      for (let i = 0; i < uncoveredPoints.length; i++) {
+        const distance = Math.sqrt(
+          Math.pow(candidate.x - uncoveredPoints[i].x, 2) + 
+          Math.pow(candidate.y - uncoveredPoints[i].y, 2)
+        );
+        if (distance <= rangeInPixels * 0.8) { // 80% range for placement optimization
+          coveredIndices.push(i);
+        }
+      }
+      
+      if (coveredIndices.length > bestCoverage) {
+        bestPoint = candidate;
+        bestCoverage = coveredIndices.length;
+        bestCoveredIndices = coveredIndices;
+      }
+    }
+    
+    if (bestPoint && bestCoverage > 0) {
+      // Place antenna at best point
+      gapAntennas.push({
+        id: `gap-antenna-${gapAntennas.length + 1}`,
+        position: { x: bestPoint.x, y: bestPoint.y },
+        range: antennaRangeMeters,
+        power: defaultAntennaPower
+      });
+      
+      // Remove covered points from uncovered list (in reverse order to maintain indices)
+      bestCoveredIndices.sort((a, b) => b - a).forEach(index => {
+        uncoveredPoints.splice(index, 1);
+      });
+      
+      console.log(`🟦 GAP FILLING: Placed antenna at (${bestPoint.x.toFixed(1)}, ${bestPoint.y.toFixed(1)}), covered ${bestCoverage} points`);
+    } else {
+      // No good placement found, break to avoid infinite loop
+      break;
+    }
+    
+    // Safety limit
+    if (gapAntennas.length > 50) {
+      console.log("🟦 GAP FILLING: Reached safety limit of 50 gap antennas");
+      break;
+    }
+  }
+  
+  console.log(`🟦 GAP FILLING: Added ${gapAntennas.length} gap-filling antennas`);
+  return gapAntennas;
 }
 
 // Helper function to cluster uncovered points to identify coverage gaps

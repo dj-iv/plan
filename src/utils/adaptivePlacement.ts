@@ -20,6 +20,7 @@ interface AdaptiveOptions {
   edgePenaltyWeight?: number;         // Weight for edge proximity penalty (default 0.3)
   overlapPenaltyWeight?: number;      // Weight for overlap penalty (default 0.6)
   debug?: boolean;                    // Enable console diagnostics
+  gridSpacingPercent?: number;        // Percentage of range used for initial candidate spacing (default 50)
 }
 
 interface PlacementResult { points: Point[]; coveragePercent: number; uncoveredCount: number; totalCells: number; }
