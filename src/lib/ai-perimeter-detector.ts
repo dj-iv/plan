@@ -98,7 +98,7 @@ export class AIPerimeterDetector {
     // Transform coordinates back to full canvas space
     return results.map(result => ({
       ...result,
-      perimeter: result.perimeter.map(p => ({
+      points: result.points.map(p => ({
         x: p.x + region.x,
         y: p.y + region.y
       })),
@@ -113,7 +113,7 @@ export class AIPerimeterDetector {
 
   // Smart area calculation with hole subtraction
   calculateNetArea(result: PerimeterResult): number {
-    const mainArea = this.calculatePolygonArea(result.perimeter);
+    const mainArea = this.calculatePolygonArea(result.points);
     const holeArea = result.holes?.reduce(
       (sum, hole) => sum + this.calculatePolygonArea(hole),
       0

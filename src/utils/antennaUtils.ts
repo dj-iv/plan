@@ -492,7 +492,7 @@ export function simpleAutoPlaceAntennas(options: AutoPlaceOptions): Antenna[] {
       for (const n of neighborMap[bestIdx]) uncoveredSet.delete(n);
       if (placedThisArea > 1000) { console.warn(`🧩 Area ${areaIdx}: safety stop at 1000 antennas`); break; }
     }
-    console.log(`🧩 Area ${areaIdx}: placed ${placedThisArea} antennas (remaining uncovered=${[...uncoveredSet].length})`);
+    console.log(`🧩 Area ${areaIdx}: placed ${placedThisArea} antennas (remaining uncovered=${Array.from(uncoveredSet).length})`);
 
     // Optional fine gap fill with tighter sampling if still uncovered (skip if large)
     if (placedThisArea < 200 && savedAreas.length === 1) {

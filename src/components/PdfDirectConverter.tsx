@@ -262,7 +262,7 @@ const PdfDirectConverter: React.FC<PdfDirectConverterProps> = ({
           <li><strong>Fallback Method:</strong> Try this if the primary method fails - uses a different rendering approach</li>
           <li><strong>Alternative Method:</strong> For complex PDFs that fail with other methods - may be slower</li>
           <li>Simple PDFs work best - complex PDFs with many elements may not render correctly</li>
-          <li>Try different pages if the first page doesn't contain the floorplan</li>
+          <li>Try different pages if the first page doesn&apos;t contain the floorplan</li>
         </ul>
       </div>
     </div>

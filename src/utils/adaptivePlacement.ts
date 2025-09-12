@@ -19,6 +19,7 @@ interface AdaptiveOptions {
   safetyFactor?: number;              // Safety multiplier for dynamic max (default 1.25)
   edgePenaltyWeight?: number;         // Weight for edge proximity penalty (default 0.3)
   overlapPenaltyWeight?: number;      // Weight for overlap penalty (default 0.6)
+  gridSpacingPercent?: number;        // Grid spacing as percentage (default 50)
   debug?: boolean;                    // Enable console diagnostics
 }
 
