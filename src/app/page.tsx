@@ -12,79 +12,103 @@ export default function Home() {
   const [scale, setScale] = useState<number | null>(null);
   const [unit, setUnit] = useState<string>('meters');
   const [calibrateTick, setCalibrateTick] = useState<number>(0);
-  const [fullscreenTick, setFullscreenTick] = useState<number>(0);
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [showCanvas, setShowCanvas] = useState<boolean>(false);
 
   const handleFileUpload = useCallback((file: File, previewUrl?: string) => {
     setUploadedFile(file);
     setImageUrl(previewUrl || (file ? URL.createObjectURL(file) : ''));
-    // Nudge fullscreen after upload
-    setFullscreenTick(t => t + 1);
+    // Automatically switch to canvas view
+    setTimeout(() => {
+      setShowCanvas(true);
+    }, 500); // Small delay for smooth transition
   }, []);
 
-  return (
-    <main style={{ position:'relative', minHeight:'100vh', background:'#ffffff' }}>
-      <div style={{ maxWidth:960, margin:'0 auto', padding:'32px 16px', fontFamily:'ui-sans-serif, system-ui, -apple-system' }}>
-        <header style={{ marginBottom:24 }}>
-          <h1 style={{ fontSize:28, fontWeight:700, color:'#111827', margin:0 }}>Floorplan Analyzer</h1>
-          <p style={{ color:'#6b7280', marginTop:8 }}>Step 1: Upload a floorplan (image or PDF). Then set scale and measure areas.</p>
-        </header>
+  const handleReset = useCallback(() => {
+    setUploadedFile(null);
+    setImageUrl("");
+    setScale(null);
+    setUnit('meters');
+    setInfoMessage(null);
+    setShowCanvas(false);
+  }, []);
 
-        {/* Upload */}
-        <section style={{ background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, overflow:'hidden' }}>
-          <div style={{ background:'linear-gradient(90deg,#3b82f6,#f97316)', color:'#fff', padding:'10px 14px', fontWeight:600 }}>Upload</div>
-          <div style={{ padding:16 }}>
-            <FileUpload onFileUpload={handleFileUpload} onPdfImageReady={(d)=> setImageUrl(d)} />
+  // Show upload screen if no canvas view
+  if (!showCanvas) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-2xl">
+          <div className="text-center mb-8">
+            <h1 className="text-4xl font-bold text-gray-900 mb-4">Floorplan Analyser</h1>
+            <p className="text-lg text-gray-600">Upload your floorplan to start analysing areas, measurements, and antenna coverage</p>
+          </div>
+          
+          {/* Large Upload Area */}
+          <div className="bg-white rounded-2xl shadow-xl p-8">
+            <FileUpload 
+              onFileUpload={handleFileUpload} 
+              onPdfImageReady={(d) => setImageUrl(d)} 
+            />
+            
             {uploadedFile && (
-              <div style={{ marginTop:12, fontSize:12, color:'#065f46', background:'#ecfdf5', border:'1px solid #a7f3d0', padding:'8px 10px', borderRadius:8 }}>
-                {uploadedFile.name} • {(uploadedFile.size/1024/1024).toFixed(1)} MB
+              <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+                <div className="flex items-center">
+                  <div className="flex-shrink-0">
+                    <svg className="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                  <div className="ml-3">
+                    <p className="text-sm font-medium text-green-800">File uploaded successfully</p>
+                    <p className="text-sm text-green-600">{uploadedFile.name} • {(uploadedFile.size/1024/1024).toFixed(1)} MB</p>
+                  </div>
+                </div>
               </div>
             )}
-            {/* Info note for PDFs if processing fails */}
-            <div style={{ marginTop:8, fontSize:12, color:'#92400e', background:'#fffbeb', border:'1px solid #fcd34d', padding:'8px 10px', borderRadius:8 }}>
-              Tip: If a PDF fails to render, export the first page as an image (PNG/JPG) and upload it.
+            
+            <div className="mt-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+              <p className="text-sm text-amber-800">
+                <strong>Tip:</strong> Supports images (PNG, JPG) and PDF files. For best results with PDFs, export the first page as an image if automatic conversion fails.
+              </p>
             </div>
           </div>
-        </section>
+        </div>
+      </main>
+    );
+  }
 
-        {/* Scale */}
-        <section style={{ marginTop:24, background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, overflow:'hidden' }}>
-          <div style={{ background:'#f3f4f6', padding:'10px 14px', fontWeight:600, color:'#111827' }}>Scale</div>
-          <div style={{ padding:16 }}>
-            <ScaleControl
-              currentScale={scale}
-              currentUnit={unit}
-              onScaleSet={(s,u)=>{ setScale(s); setUnit(u); }}
-              onRequestCalibrate={() => setCalibrateTick(t => t + 1)}
-            />
-          </div>
-        </section>
-
-        {/* Preview / Canvas */}
-        {infoMessage && (
-          <div style={{ marginTop:12, fontSize:12, color:'#065f46', background:'#ecfdf5', border:'1px solid #a7f3d0', padding:'8px 10px', borderRadius:8 }}>
-            {infoMessage}
-          </div>
-        )}
-        {imageUrl && (
-          <section style={{ marginTop:24, background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, overflow:'hidden' }}>
-            <div style={{ background:'#f3f4f6', padding:'10px 14px', fontWeight:600, color:'#111827' }}>Measure</div>
-            <div style={{ padding:16 }}>
-              <FloorplanCanvas 
-                imageUrl={imageUrl} 
-                scale={scale} 
-                scaleUnit={unit}
-                onCalibrate={(s,u)=>{ setScale(s); setUnit(u); }}
-                requestCalibrateToken={calibrateTick}
-                requestFullscreenToken={fullscreenTick}
-                onFullscreenChange={(fs)=> setIsFullscreen(fs)}
-                onTrimmedImage={(cropped, _quad, conf)=>{ setImageUrl(cropped); setInfoMessage(`Trimmed frame (confidence ${Math.round((conf||0)*100)}%)`); }}
-                onScaleDetected={(s,u,_m,_c)=>{ setScale(s); setUnit(u); }}
-              />
-            </div>
-          </section>
-        )}
+  // Show canvas view (fullscreen)
+  return (
+    <main className="h-screen w-screen bg-gray-900 overflow-hidden">
+      {/* Scale control in top-right corner */}
+      <div className="absolute top-4 right-4 z-50 bg-white bg-opacity-90 rounded-lg shadow-lg p-4">
+        <ScaleControl
+          currentScale={scale}
+          currentUnit={unit}
+          onScaleSet={(s,u)=>{ setScale(s); setUnit(u); }}
+          onRequestCalibrate={() => setCalibrateTick(t => t + 1)}
+        />
       </div>
+
+      {/* Info message */}
+      {infoMessage && (
+        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-50 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg">
+          {infoMessage}
+        </div>
+      )}
+
+      {/* Fullscreen Canvas */}
+      {imageUrl && (
+        <FloorplanCanvas 
+          imageUrl={imageUrl} 
+          scale={scale} 
+          scaleUnit={unit}
+          onCalibrate={(s,u)=>{ setScale(s); setUnit(u); }}
+          requestCalibrateToken={calibrateTick}
+          onTrimmedImage={(cropped, _quad, conf)=>{ setImageUrl(cropped); setInfoMessage(`Trimmed frame (confidence ${Math.round((conf||0)*100)}%)`); }}
+          onScaleDetected={(s,u,_m,_c)=>{ setScale(s); setUnit(u); }}
+          onReset={handleReset}
+        />
+      )}
     </main>
   );
 }

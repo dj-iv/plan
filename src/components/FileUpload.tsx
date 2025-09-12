@@ -183,10 +183,10 @@ export default function FileUpload({ onFileUpload, onPdfImageReady }: FileUpload
       <div
         {...getRootProps()}
         className={`
-          border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-all
+          border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-300 min-h-[300px] flex flex-col items-center justify-center
           ${isDragActive 
-            ? 'border-blue-400 bg-blue-50 transform scale-105' 
-            : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50'
+            ? 'border-blue-400 bg-blue-50 transform scale-[1.02] shadow-lg' 
+            : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50 hover:shadow-md'
           }
           ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}
         `}
@@ -194,46 +194,85 @@ export default function FileUpload({ onFileUpload, onPdfImageReady }: FileUpload
         <input {...getInputProps()} />
         
         {isProcessing ? (
-          <div className="space-y-3">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
-            <p className="text-sm text-gray-600">{statusMessage || 'Processing file...'}</p>
+          <div className="space-y-6">
+            <div className="relative">
+              <div className="animate-spin rounded-full h-16 w-16 border-4 border-blue-200 border-t-blue-500 mx-auto"></div>
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="w-8 h-8 bg-blue-500 rounded-full animate-pulse"></div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <p className="text-lg font-medium text-gray-700">{statusMessage || 'Processing file...'}</p>
+              <p className="text-sm text-gray-500">This may take a moment for large files</p>
+            </div>
           </div>
         ) : (
-          <div className="space-y-3">
-            <div className="w-12 h-12 bg-gradient-to-r from-blue-500 to-orange-500 rounded-full flex items-center justify-center mx-auto" style={{width:48,height:48}}>
-              <svg
-                width="24"
-                height="24"
-                className="text-white"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path 
-                  strokeLinecap="round" 
-                  strokeLinejoin="round" 
-                  strokeWidth={2} 
-                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" 
-                />
-              </svg>
+          <div className="space-y-6">
+            <div className="relative">
+              <div className={`w-20 h-20 bg-gradient-to-r from-blue-500 to-orange-500 rounded-2xl flex items-center justify-center mx-auto transition-transform duration-300 ${isDragActive ? 'scale-110' : ''}`}>
+                <svg
+                  width="40"
+                  height="40"
+                  className="text-white"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round" 
+                    strokeWidth={2} 
+                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" 
+                  />
+                </svg>
+              </div>
+              {isDragActive && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-24 h-24 border-4 border-blue-400 border-dashed rounded-2xl animate-pulse"></div>
+                </div>
+              )}
             </div>
             
             {isDragActive ? (
-              <div>
-                <p className="text-sm font-medium text-blue-600">Drop your file here</p>
-                <p className="text-xs text-blue-500">Release to upload</p>
+              <div className="space-y-2">
+                <p className="text-xl font-semibold text-blue-600">Drop your file here</p>
+                <p className="text-sm text-blue-500">Release to upload and start analysing</p>
               </div>
             ) : (
-              <div>
-                <p className="text-sm font-medium text-gray-900 mb-1">
-                  Drop file or <span className="text-blue-600">browse files</span>
-                </p>
-                <p className="text-xs text-gray-500">
-                  PNG, JPG, PDF up to 50MB; DWG (beta)
-                </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  Automatic scale detection (beta)
-                </p>
+              <div className="space-y-4">
+                <div>
+                  <p className="text-xl font-semibold text-gray-900 mb-2">
+                    Drop your floorplan here or <span className="text-blue-600 underline decoration-2">browse files</span>
+                  </p>
+                  <p className="text-base text-gray-600 mb-1">
+                    Supports PNG, JPG, PDF files up to 50MB
+                  </p>
+                  <p className="text-sm text-gray-500">
+                    DWG files supported (beta) • Automatic scale detection included
+                  </p>
+                </div>
+                
+                {/* Feature highlights */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4">
+                  <div className="flex items-center space-x-2 text-sm text-gray-600">
+                    <svg className="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                    <span>Area calculation</span>
+                  </div>
+                  <div className="flex items-center space-x-2 text-sm text-gray-600">
+                    <svg className="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                    <span>Scale detection</span>
+                  </div>
+                  <div className="flex items-center space-x-2 text-sm text-gray-600">
+                    <svg className="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                    <span>Antenna coverage</span>
+                  </div>
+                </div>
               </div>
             )}
           </div>

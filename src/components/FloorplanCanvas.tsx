@@ -1,6 +1,5 @@
 
-import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import SmartAutoPlaceButton from './SmartAutoPlaceButton';
 import useFixAutoPlaceButton from '@/hooks/useFixAutoPlaceButton';
 // Built-in deterministic full-coverage placement (self-contained to avoid module export issues)
@@ -114,10 +113,10 @@ interface FloorplanCanvasProps {
   scaleUnit: string;
   onCalibrate?: (scale: number, unit: string) => void;
   requestCalibrateToken?: number; // increment to start calibrate from outside
-  requestFullscreenToken?: number; // increment to open fullscreen from outside
   onFullscreenChange?: (isFs: boolean) => void;
   onTrimmedImage?: (croppedDataUrl: string, quad?: {x:number;y:number}[], confidence?: number) => void;
   onScaleDetected?: (unitsPerPixel: number, unit: string, method?: string, confidence?: number) => void;
+  onReset?: () => void; // callback to reset and go back to upload screen
 }
 
 interface Point {
@@ -153,7 +152,7 @@ interface Antenna {
   power?: number; // 0-100 percentage, optional to match antennaUtils
 }
 
-export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrate, requestCalibrateToken, requestFullscreenToken, onFullscreenChange, onTrimmedImage, onScaleDetected }: FloorplanCanvasProps) {
+export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrate, requestCalibrateToken, onFullscreenChange, onTrimmedImage, onScaleDetected, onReset }: FloorplanCanvasProps) {
   // Use our custom hook to fix the Auto Place button
   // useFixAutoPlaceButton(); // Disabled - causing memory leak and unnecessary
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -190,7 +189,6 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   const lastMouseRef = useRef<{x:number;y:number}|null>(null);
   const [isPanCursor, setIsPanCursor] = useState(false);
   const suppressClickRef = useRef(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [scaleConfidence, setScaleConfidence] = useState<number | null>(null);
   const [scaleMethod, setScaleMethod] = useState<string | null>(null);
@@ -273,15 +271,15 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   };
 
   const historyRef = useRef<Snapshot[]>([]);
+  const redoHistoryRef = useRef<Snapshot[]>([]);
+  const undoRef = useRef<() => void>();
+  const redoRef = useRef<() => void>();
   const draggingVertexIdxRef = useRef<number | null>(null);
   const draggingHoleIndexRef = useRef<number | null>(null);
   const draggingAntennaIdRef = useRef<string | null>(null);
   const draggingTargetRef = useRef<'perimeter' | 'currentArea' | 'calArea' | 'hole' | null>(null);
   // Preserve view (zoom/pan) across image replacements (e.g., after Trim)
   const preserveViewRef = useRef<null | { compositeScale: number; centerImg: {x:number;y:number} }>(null);
-  // Track last image url we've auto-opened for
-  const lastAutoFsForUrlRef = useRef<string | null>(null);
-  const lastFsTokenRef = useRef<number | undefined>(undefined);
   // Mandatory calibration gating
   const mustCalibrate = !scale;
 
@@ -328,21 +326,13 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     img.src = imageUrl;
   }, [imageUrl]);
 
-  // Auto-open fullscreen when the new image has actually loaded
+  // Scroll to top and notify parent when ready
   useEffect(() => {
-    if (imageLoaded && imageUrl && lastAutoFsForUrlRef.current !== imageUrl) {
-      setIsFullscreen(true);
-      lastAutoFsForUrlRef.current = imageUrl;
-    }
-  }, [imageLoaded, imageUrl]);
-
-  // Scroll to top when entering fullscreen to avoid any off-screen artifacts
-  useEffect(() => {
-    if (isFullscreen) {
+    if (imageLoaded && imageUrl) {
       try { window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior }); } catch { window.scrollTo(0, 0); }
+      onFullscreenChange && onFullscreenChange(true);
     }
-  onFullscreenChange && onFullscreenChange(isFullscreen);
-  }, [isFullscreen]);
+  }, [imageLoaded, imageUrl, onFullscreenChange]);
 
   // Recalculate canvas size on container resize or fullscreen toggle
   useEffect(() => {
@@ -368,7 +358,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       ro.disconnect();
       window.removeEventListener('resize', onWin);
     };
-  }, [image, isFullscreen]);
+  }, [image]);
   // Keep drawings aligned if canvas size changes (e.g., entering fullscreen or UI overlays)
   const prevSizeRef = useRef<{width:number;height:number}>({ width: 0, height: 0 });
   useEffect(() => {
@@ -1464,10 +1454,44 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     };
     historyRef.current.push(snap);
     if (historyRef.current.length > 50) historyRef.current.shift();
+    
+    // Clear redo history when new action is performed
+    redoHistoryRef.current = [];
   }
-  function undo() {
+  
+  const undo = () => {
     const last = historyRef.current.pop();
     if (!last) return;
+    
+    // Save current state to redo history before applying undo
+    const currentSnap: Snapshot = {
+      areas: areas.map(a => ({ id: a.id, points: a.points.map(p=>({...p})), area: a.area })),
+      currentArea: currentArea.map(p=>({...p})),
+      calibrationPoints: calibrationPoints.map(p=>({...p})),
+      calibrationAreaPoints: calibrationAreaPoints.map(p=>({...p})),
+      calibrationAreaReal,
+      perimeter: perimeter ? perimeter.map(p=>({...p})) : null,
+      perimeterRaw: perimeterRaw ? perimeterRaw.map(p=>({...p})) : null,
+      holes: holes.map(h => h.map(p=>({...p}))),
+      objects: objects.map(o => ({ id: o.id, name: o.name, perimeter: o.perimeter.map(p=>({...p})), holes: o.holes.map(h=>h.map(p=>({...p}))) })),
+      justSavedObject,
+      autoHolesPreview: autoHolesPreview.map(h=>h.map(p=>({...p}))),
+      autoHolesIndex,
+      antennas: antennas.map(a => ({ ...a, position: { ...a.position } })),
+      excludeCurrent: excludeCurrent.map(p=>({...p})),
+      roi: roi ? { ...roi } : null,
+      mode,
+      manualRegions: manualRegions.map(r=> r.map(p=>({...p}))),
+      manualHoles: manualHoles.map(r=> r.map(p=>({...p}))),
+      manualResult,
+      selections: selections.map(s => ({ ...s })),
+      savedAreas: savedAreas.map(poly => poly.map(p=>({...p}))),
+      savedExclusions: savedExclusions.map(poly => poly.map(p=>({...p}))),
+    };
+    redoHistoryRef.current.push(currentSnap);
+    if (redoHistoryRef.current.length > 50) redoHistoryRef.current.shift();
+    
+    // Apply the undo state
     setAreas(last.areas);
     setCurrentArea(last.currentArea);
     setCalibrationPoints(last.calibrationPoints);
@@ -1488,9 +1512,82 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     setManualResult(last.manualResult);
     setMode(last.mode);
     setSelections(last.selections);
-  setSavedAreas(last.savedAreas);
-  setSavedExclusions(last.savedExclusions);
-  }
+    setSavedAreas(last.savedAreas);
+    setSavedExclusions(last.savedExclusions);
+  };
+
+  // Update undo ref when function changes
+  useEffect(() => {
+    undoRef.current = undo;
+  }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions]);
+
+  const redo = () => {
+    console.log('Redo function called');
+    const next = redoHistoryRef.current.pop();
+    if (!next) {
+      console.log('No redo history available');
+      return;
+    }
+    
+    console.log('Applying redo...', next);
+    
+    // Save current state to undo history before applying redo
+    const currentSnap: Snapshot = {
+      areas: areas.map(a => ({ id: a.id, points: a.points.map(p=>({...p})), area: a.area })),
+      currentArea: currentArea.map(p=>({...p})),
+      calibrationPoints: calibrationPoints.map(p=>({...p})),
+      calibrationAreaPoints: calibrationAreaPoints.map(p=>({...p})),
+      calibrationAreaReal,
+      perimeter: perimeter ? perimeter.map(p=>({...p})) : null,
+      perimeterRaw: perimeterRaw ? perimeterRaw.map(p=>({...p})) : null,
+      holes: holes.map(h => h.map(p=>({...p}))),
+      objects: objects.map(o => ({ id: o.id, name: o.name, perimeter: o.perimeter.map(p=>({...p})), holes: o.holes.map(h=>h.map(p=>({...p}))) })),
+      justSavedObject,
+      autoHolesPreview: autoHolesPreview.map(h=>h.map(p=>({...p}))),
+      autoHolesIndex,
+      antennas: antennas.map(a => ({ ...a, position: { ...a.position } })),
+      excludeCurrent: excludeCurrent.map(p=>({...p})),
+      roi: roi ? { ...roi } : null,
+      mode,
+      manualRegions: manualRegions.map(r=> r.map(p=>({...p}))),
+      manualHoles: manualHoles.map(r=> r.map(p=>({...p}))),
+      manualResult,
+      selections: selections.map(s => ({ ...s })),
+      savedAreas: savedAreas.map(poly => poly.map(p=>({...p}))),
+      savedExclusions: savedExclusions.map(poly => poly.map(p=>({...p}))),
+    };
+    historyRef.current.push(currentSnap);
+    if (historyRef.current.length > 50) historyRef.current.shift();
+    
+    // Apply the redo state
+    setAreas(next.areas);
+    setCurrentArea(next.currentArea);
+    setCalibrationPoints(next.calibrationPoints);
+    setCalibrationAreaPoints(next.calibrationAreaPoints);
+    setCalibrationAreaReal(next.calibrationAreaReal);
+    setPerimeter(next.perimeter);
+    setPerimeterRaw(next.perimeterRaw);
+    setHoles(next.holes);
+    setObjects(next.objects);
+    setJustSavedObject(next.justSavedObject);
+    setAutoHolesPreview(next.autoHolesPreview);
+    setAutoHolesIndex(next.autoHolesIndex);
+    setAntennas(next.antennas);
+    setExcludeCurrent(next.excludeCurrent);
+    setRoi(next.roi);
+    setManualRegions(next.manualRegions);
+    setManualHoles(next.manualHoles);
+    setManualResult(next.manualResult);
+    setMode(next.mode);
+    setSelections(next.selections);
+    setSavedAreas(next.savedAreas);
+    setSavedExclusions(next.savedExclusions);
+  };
+
+  // Update redo ref when function changes
+  useEffect(() => {
+    redoRef.current = redo;
+  }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions]);
 
   const calibrationDistancePx = () => {
     if (calibrationPoints.length < 2 || !image) return 0;
@@ -2199,15 +2296,22 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     }
   }, [requestCalibrateToken]);
 
-  // Global shortcuts: Escape exit fullscreen, Ctrl/Cmd+Z undo, M toggle Measure/Select
+  // Global shortcuts: Ctrl/Cmd+Z undo, Ctrl+Y/Ctrl+Shift+Z redo, M toggle Measure/Select
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const key = e.key?.toLowerCase?.() || '';
-      if (key === 'escape') {
-        setIsFullscreen(false);
-        return;
+      if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) { 
+        e.preventDefault(); 
+        console.log('Ctrl+Z pressed - calling undo via ref');
+        undoRef.current?.(); 
+        return; 
       }
-      if ((e.ctrlKey || e.metaKey) && key === 'z') { e.preventDefault(); undo(); return; }
+      if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) { 
+        e.preventDefault(); 
+        console.log('Redo shortcut pressed - calling redo via ref');
+        redoRef.current?.(); 
+        return; 
+      }
       if (key === 'm') {
         e.preventDefault();
         if (mustCalibrate) { setMode('calibrate'); return; }
@@ -2219,20 +2323,6 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     return () => window.removeEventListener('keydown', onKey);
   }, [mustCalibrate]);
 
-  // Outside trigger to open fullscreen ONLY when token changes
-  useEffect(() => {
-    if (requestFullscreenToken === undefined) return;
-    if (lastFsTokenRef.current === undefined) {
-      // Initialize without triggering on first mount
-      lastFsTokenRef.current = requestFullscreenToken;
-      return;
-    }
-    if (requestFullscreenToken !== lastFsTokenRef.current) {
-      setIsFullscreen(true);
-      lastFsTokenRef.current = requestFullscreenToken;
-    }
-  }, [requestFullscreenToken]);
-
   // Prevent page scroll while zooming over the canvas/container
   useEffect(() => {
     const el = containerRef.current;
@@ -2242,13 +2332,12 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     return () => el.removeEventListener('wheel', handler as any);
   }, []);
 
-  // Lock body scroll when fullscreen overlay is open
+  // Lock body scroll when overlay is open
   useEffect(() => {
-    if (!isFullscreen) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = prev; };
-  }, [isFullscreen]);
+  }, []);
 
   // Detect perimeter via worker, optionally limited to ROI
   async function runPerimeterDetection() {
@@ -2481,21 +2570,28 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
           </button>
           <button type="button"
             onClick={undo}
-            className="bg-white/20 text-white px-4 py-2 rounded-lg font-medium hover:bg-white/30 transition-all transform hover:scale-105 shadow-sm"
+            className="bg-white/20 text-white px-4 py-2 rounded-lg font-medium hover:bg-white/30 transition-all transform hover:scale-105 shadow-sm disabled:opacity-50"
             title="Undo (Ctrl+Z)"
+            disabled={historyRef.current.length === 0}
           >
             Undo
           </button>
-      {isFullscreen && (
-            <>
-              <button type="button"
-        onClick={() => { if (mustCalibrate) { setMode('calibrate'); return; } setMode(mode==='pick-hole' ? 'select' : 'pick-hole'); setAutoHolesPreview([]); setAutoHolesIndex(-1); setRoi(null); }}
-        disabled={mustCalibrate}
-                className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 ${mode==='pick-hole' ? 'bg-white text-amber-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'}`}
-                title="Draw a rectangle around a hole to auto-select the largest hole inside"
-              >
-                Exclude Auto
-              </button>
+          <button type="button"
+            onClick={redo}
+            className="bg-white/20 text-white px-4 py-2 rounded-lg font-medium hover:bg-white/30 transition-all transform hover:scale-105 shadow-sm disabled:opacity-50"
+            title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
+            disabled={redoHistoryRef.current.length === 0}
+          >
+            Redo
+          </button>
+          <button type="button"
+            onClick={() => { if (mustCalibrate) { setMode('calibrate'); return; } setMode(mode==='pick-hole' ? 'select' : 'pick-hole'); setAutoHolesPreview([]); setAutoHolesIndex(-1); setRoi(null); }}
+            disabled={mustCalibrate}
+            className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 ${mode==='pick-hole' ? 'bg-white text-amber-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'}`}
+            title="Draw a rectangle around a hole to auto-select the largest hole inside"
+          >
+            Exclude Auto
+          </button>
               {/* Auto ROI removed */}
               <button type="button"
                 onClick={() => { if (mustCalibrate) { setMode('calibrate'); return; } setMode('roi'); setRoi(null); }}
@@ -2535,15 +2631,15 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
               {objects.length > 0 && (
                 <span className="px-2 py-1 rounded-lg bg-white/20 text-white text-sm">objects {objects.length}</span>
               )}
-            </>
-          )}
-          <button type="button"
-            onClick={() => setIsFullscreen(v => !v)}
-            className="bg-white/20 text-white px-4 py-2 rounded-lg font-medium hover:bg-white/30 transition-all transform hover:scale-105 shadow-sm"
-            title={isFullscreen ? 'Exit fullscreen' : 'Open fullscreen'}
-          >
-            {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-          </button>
+              
+              {/* Reset button moved to far right for safety */}
+              <button type="button"
+                onClick={onReset}
+                className="bg-red-500 text-white px-4 py-2 rounded-lg font-medium hover:bg-red-600 transition-all transform hover:scale-105 shadow-sm ml-4"
+                title="Upload a different floorplan"
+              >
+                Reset
+              </button>
         </div>
         
         {/* Antenna Controls */}
@@ -2737,8 +2833,51 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
         <div className="flex items-center space-x-2">
       {scale ? (
             <div className="px-3 py-1.5 bg-white/20 text-white rounded-lg text-sm backdrop-blur-sm">
-        📏 Scale: 1cm = {(scale * 10).toFixed(1)}m
-              {isFullscreen && scaleConfidence !== null && (
+        📏 Scale: {(() => {
+          // Convert the scale to a meaningful display format
+          // scale is in [scaleUnit] per pixel
+          // We want to show 1cm = X meters (or appropriate conversion)
+          
+          let pixelsPerCm;
+          let scaleInMetersPerPixel;
+          
+          // First convert scale to meters per pixel
+          switch(scaleUnit) {
+            case 'meters':
+              scaleInMetersPerPixel = scale;
+              break;
+            case 'centimeters':
+              scaleInMetersPerPixel = scale / 100; // cm to m
+              break;
+            case 'millimeters':
+              scaleInMetersPerPixel = scale / 1000; // mm to m
+              break;
+            case 'feet':
+              scaleInMetersPerPixel = scale * 0.3048; // feet to m
+              break;
+            default:
+              scaleInMetersPerPixel = scale;
+          }
+          
+          // Calculate how many pixels = 1cm
+          pixelsPerCm = 0.01 / scaleInMetersPerPixel; // 1cm = 0.01m
+          
+          // Calculate what 1cm represents in the original plan scale
+          const metersPerCm = 0.01 / scaleInMetersPerPixel * scaleInMetersPerPixel;
+          
+          // For display, convert back to the appropriate unit
+          if (scaleInMetersPerPixel > 0.1) {
+            // Large scale - show in meters
+            return `1cm = ${(0.01 / scaleInMetersPerPixel).toFixed(1)}m`;
+          } else if (scaleInMetersPerPixel > 0.001) {
+            // Medium scale - show in centimeters  
+            return `1cm = ${(1 / scaleInMetersPerPixel).toFixed(0)}cm`;
+          } else {
+            // Small scale - show in millimeters
+            return `1cm = ${(10 / scaleInMetersPerPixel).toFixed(0)}mm`;
+          }
+        })()}
+              {scaleConfidence !== null && (
                 <span className="ml-2 inline-flex items-center text-xs px-2 py-0.5 rounded bg-white/30 text-white">
                   {Math.round(scaleConfidence*100)}%{scaleMethod ? ` • ${scaleMethod}` : ''}
                 </span>
@@ -2746,6 +2885,13 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
             </div>
           ) : (
             <div className="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm">⚠️ No Scale Set</div>
+          )}
+          
+          {/* Refine Mode Instructions */}
+          {mode === 'refine' && (
+            <div className="px-3 py-1.5 bg-blue-500/20 text-white rounded-lg text-sm backdrop-blur-sm">
+              🔧 Refine: Drag to move • Alt+click to delete • Ctrl+click to add dots
+            </div>
           )}
         </div>
       </div>
@@ -2798,190 +2944,96 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
 
       {/* Calibration Panel */}
       {mode === 'calibrate' && (
-        isFullscreen ? (
-          <div className="absolute left-1/2 -translate-x-1/2 bottom-4 z-[1100] p-3 rounded-lg bg-orange-50/95 border border-orange-200 shadow">
-            <div className="flex flex-wrap items-center gap-3 text-sm text-orange-900">
-              <span className="font-medium">Calibration:</span>
-              <span>{calibrationPoints.length} point(s) selected{calibrationPoints.length === 2 ? ` • ${calibrationDistancePx().toFixed(3)} px` : ''}</span>
-              <input type="number" step="any" placeholder="Known distance" value={calibrationReal} onChange={(e)=> setCalibrationReal(e.target.value)} className="px-2 py-1 border rounded" style={{minWidth:120}} />
-              <select value={calibrationUnit} onChange={e=> setCalibrationUnit(e.target.value)} className="px-2 py-1 border rounded">
-                <option value="meters">meters</option>
-                <option value="feet">feet</option>
-                <option value="centimeters">centimeters</option>
-                <option value="millimeters">millimeters</option>
-              </select>
-              <button onClick={applyCalibration} className="px-3 py-1.5 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50" disabled={calibrationPoints.length !== 2 || !calibrationReal}>Apply</button>
-            </div>
+        <div className="absolute left-1/2 -translate-x-1/2 bottom-4 z-[1100] p-3 rounded-lg bg-orange-50/95 border border-orange-200 shadow">
+          <div className="flex flex-wrap items-center gap-3 text-sm text-orange-900">
+            <span className="font-medium">Calibration:</span>
+            <span>{calibrationPoints.length} point(s) selected{calibrationPoints.length === 2 ? ` • ${calibrationDistancePx().toFixed(3)} px` : ''}</span>
+            <input type="number" step="any" placeholder="Known distance" value={calibrationReal} onChange={(e)=> setCalibrationReal(e.target.value)} className="px-2 py-1 border rounded" style={{minWidth:120}} />
+            <select value={calibrationUnit} onChange={e=> setCalibrationUnit(e.target.value)} className="px-2 py-1 border rounded">
+              <option value="meters">meters</option>
+              <option value="feet">feet</option>
+              <option value="centimeters">centimeters</option>
+              <option value="millimeters">millimeters</option>
+            </select>
+            <button onClick={applyCalibration} className="px-3 py-1.5 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50" disabled={calibrationPoints.length !== 2 || !calibrationReal}>Apply</button>
           </div>
-        ) : (
-          <div className="p-4 bg-orange-50 border-t border-orange-200">
-            <div className="flex flex-wrap items-center gap-3 text-sm text-orange-900">
-              <span className="font-medium">Calibration:</span>
-              <span>{calibrationPoints.length} point(s) selected{calibrationPoints.length === 2 ? ` • ${calibrationDistancePx().toFixed(3)} px` : ''}</span>
-              <input type="number" step="any" placeholder="Known distance" value={calibrationReal} onChange={(e)=> setCalibrationReal(e.target.value)} className="px-2 py-1 border rounded" style={{minWidth:120}} />
-              <select value={calibrationUnit} onChange={e=> setCalibrationUnit(e.target.value)} className="px-2 py-1 border rounded">
-                <option value="meters">meters</option>
-                <option value="feet">feet</option>
-                <option value="centimeters">centimeters</option>
-              </select>
-              <button onClick={applyCalibration} className="px-3 py-1.5 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50" disabled={calibrationPoints.length !== 2 || !calibrationReal}>Apply</button>
-            </div>
-          </div>
-        )
+        </div>
       )}
 
       {/* Calibrate by Area Panel */}
       {mode === 'calibrate-area' && (
-        isFullscreen ? (
-          <div className="absolute left-1/2 -translate-x-1/2 bottom-4 z-[1100] p-3 rounded-lg bg-orange-50/95 border border-orange-200 shadow">
-            <div className="flex flex-wrap items-center gap-3 text-sm text-orange-900">
-              <span className="font-medium">Calibrate by Area:</span>
-              <span>{calibrationAreaPoints.length} point(s){calibrationAreaPoints.length >= 3 && image ? ` • ${areaPixels(calibrationAreaPoints).toFixed(2)} px²` : ''}</span>
-              <input type="number" step="any" placeholder="Known area" value={calibrationAreaReal} onChange={(e)=> setCalibrationAreaReal(e.target.value)} className="px-2 py-1 border rounded" style={{minWidth:120}} />
-              <select value={calibrationUnit} onChange={e=> setCalibrationUnit(e.target.value)} className="px-2 py-1 border rounded">
-                <option value="meters">m²</option>
-                <option value="feet">ft²</option>
-                <option value="centimeters">cm²</option>
-                <option value="millimeters">mm²</option>
-              </select>
-              <button onClick={applyCalibrationByArea} className="px-3 py-1.5 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50" disabled={calibrationAreaPoints.length < 3 || !calibrationAreaReal}>Apply</button>
-            </div>
+        <div className="absolute left-1/2 -translate-x-1/2 bottom-4 z-[1100] p-3 rounded-lg bg-orange-50/95 border border-orange-200 shadow">
+          <div className="flex flex-wrap items-center gap-3 text-sm text-orange-900">
+            <span className="font-medium">Calibrate by Area:</span>
+            <span>{calibrationAreaPoints.length} point(s){calibrationAreaPoints.length >= 3 && image ? ` • ${areaPixels(calibrationAreaPoints).toFixed(2)} px²` : ''}</span>
+            <input type="number" step="any" placeholder="Known area" value={calibrationAreaReal} onChange={(e)=> setCalibrationAreaReal(e.target.value)} className="px-2 py-1 border rounded" style={{minWidth:120}} />
+            <select value={calibrationUnit} onChange={e=> setCalibrationUnit(e.target.value)} className="px-2 py-1 border rounded">
+              <option value="meters">m²</option>
+              <option value="feet">ft²</option>
+              <option value="centimeters">cm²</option>
+              <option value="millimeters">mm²</option>
+            </select>
+            <button onClick={applyCalibrationByArea} className="px-3 py-1.5 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50" disabled={calibrationAreaPoints.length < 3 || !calibrationAreaReal}>Apply</button>
           </div>
-        ) : (
-          <div className="p-4 bg-orange-50 border-t border-orange-200">
-            <div className="flex flex-wrap items-center gap-3 text-sm text-orange-900">
-              <span className="font-medium">Calibrate by Area:</span>
-              <span>{calibrationAreaPoints.length} point(s){calibrationAreaPoints.length >= 3 && image ? ` • ${areaPixels(calibrationAreaPoints).toFixed(2)} px²` : ''}</span>
-              <input type="number" step="any" placeholder="Known area" value={calibrationAreaReal} onChange={(e)=> setCalibrationAreaReal(e.target.value)} className="px-2 py-1 border rounded" style={{minWidth:120}} />
-              <select value={calibrationUnit} onChange={e=> setCalibrationUnit(e.target.value)} className="px-2 py-1 border rounded">
-                <option value="meters">m²</option>
-                <option value="feet">ft²</option>
-                <option value="centimeters">cm²</option>
-                <option value="millimeters">mm²</option>
-              </select>
-              <button onClick={applyCalibrationByArea} className="px-3 py-1.5 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50" disabled={calibrationAreaPoints.length < 3 || !calibrationAreaReal}>Apply</button>
-            </div>
-          </div>
-        )
+        </div>
       )}
 
   {/* Area Results - Professional */}
   {(selections.length > 0) && (
-        isFullscreen ? (
-          <div className="absolute right-4 top-32 bottom-4 w-80 z-[1100] p-4 bg-white/95 border rounded-lg shadow overflow-auto">
-            <div className="mb-4">
-              <h3 className="font-semibold text-gray-900 mb-2">Summary</h3>
-              {/* Unified selections list */}
-            </div>
-            <div className="space-y-3 mb-4">
-              {selections.map((s, index) => (
-                <div key={s.id} className="flex items-center justify-between p-3 bg-white rounded-lg border shadow-sm">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-orange-500 rounded-full flex items-center justify-center">
-                      <span className="text-white text-xs font-bold">{index + 1}</span>
-                    </div>
-                    <div>
-                      <p className="font-medium text-gray-900">{s.label || 'Area'}</p>
-                    </div>
+        <div className="absolute right-4 top-32 z-[1100] p-4 bg-white/95 border rounded-lg shadow max-h-96 overflow-auto w-fit min-w-72 max-w-80">
+          <div className="mb-4">
+            <h3 className="font-semibold text-gray-900 mb-2">Summary</h3>
+            {/* Unified selections list */}
+          </div>
+          <div className="space-y-3 mb-4">
+            {selections.map((s, index) => (
+              <div key={s.id} className="flex items-center justify-between p-3 bg-white rounded-lg border shadow-sm">{/* style={{ minWidth: '260px' }} */}
+                <div className="flex items-center space-x-3">
+                  <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-orange-500 rounded-full flex items-center justify-center">
+                    <span className="text-white text-xs font-bold">{index + 1}</span>
                   </div>
-                    <div className="flex items-center space-x-3">
-                    <div className="text-right">
-                      <p className={`font-semibold ${s.value >= 0 ? 'text-blue-600' : 'text-red-600'}`}>
-                        {scale ? `${s.value.toFixed(2)} m²` : '—'}
-                      </p>
-                    </div>
-                    <button onClick={() => { pushHistory(); setSelections(list => list.filter(it => it.id !== s.id)); }} className="w-6 h-6 bg-red-100 hover:bg-red-200 text-red-600 rounded-full flex items-center justify-center text-xs transition-colors">✕</button>
+                  <div>
+                    <p className="font-medium text-gray-900">{s.label || 'Area'}</p>
                   </div>
                 </div>
-              ))}
-            </div>
-            {scale && (
-              <div className="p-3 bg-gradient-to-r from-blue-500 to-orange-500 rounded-lg text-white">
-                <div className="flex items-center justify-between">
-                  <h4 className="font-semibold">Total</h4>
-                  <p className="text-lg font-bold">{consolidatedTotal.toFixed(2)} m²</p>
+                  <div className="flex items-center space-x-3">
+                  <div className="text-right">
+                    <p className={`font-semibold ${s.value >= 0 ? 'text-blue-600' : 'text-red-600'}`}>
+                      {scale ? `${s.value.toFixed(2)} m²` : '—'}
+                    </p>
+                  </div>
+                  <button onClick={() => { pushHistory(); setSelections(list => list.filter(it => it.id !== s.id)); }} className="w-6 h-6 bg-red-100 hover:bg-red-200 text-red-600 rounded-full flex items-center justify-center text-xs transition-colors">✕</button>
                 </div>
               </div>
-            )}
-            {/* Removed duplicate bottom Total card to keep a single Total in header */}
+            ))}
           </div>
-        ) : (
-          <div className="p-6 bg-gray-50">
-            <div className="mb-4">
-              <h3 className="font-semibold text-gray-900 mb-2">Summary</h3>
-              {/* Unified selections list */}
-            </div>
-            <div className="space-y-3 mb-4">
-              {selections.map((s, index) => (
-                <div key={s.id} className="flex items-center justify-between p-3 bg-white rounded-lg border shadow-sm">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-orange-500 rounded-full flex items-center justify-center">
-                      <span className="text-white text-xs font-bold">{index + 1}</span>
-                    </div>
-                    <div>
-                      <p className="font-medium text-gray-900">{s.label || 'Area'}</p>
-                    </div>
-                  </div>
-                    <div className="flex items-center space-x-3">
-                    <div className="text-right">
-                      <p className={`font-semibold ${s.value >= 0 ? 'text-blue-600' : 'text-red-600'}`}>
-                        {scale ? `${s.value.toFixed(2)} m²` : '—'}
-                      </p>
-                    </div>
-                    <button 
-                      onClick={() => { pushHistory(); setSelections(list => list.filter(it => it.id !== s.id)); }}
-                      className="w-6 h-6 bg-red-100 hover:bg-red-200 text-red-600 rounded-full flex items-center justify-center text-xs transition-colors"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {scale && (
-              <div className="p-3 bg-gradient-to-r from-blue-500 to-orange-500 rounded-lg text-white">
-                <div className="flex items-center justify-between">
-                  <h4 className="font-semibold">Total</h4>
-                  <p className="text-lg font-bold">{consolidatedTotal.toFixed(2)} m²</p>
-                </div>
+          {scale && (
+            <div className="p-3 bg-gradient-to-r from-blue-500 to-orange-500 rounded-lg text-white">
+              <div className="flex items-center justify-between">
+                <h4 className="font-semibold">Total</h4>
+                <p className="text-lg font-bold">{consolidatedTotal.toFixed(2)} m²</p>
               </div>
-            )}
-            {/* Removed duplicate bottom Total card to keep a single Total in header */}
-          </div>
-        )
+            </div>
+          )}
+          {/* Removed duplicate bottom Total card to keep a single Total in header */}
+        </div>
       )}
 
   {/* Current area/path status - Professional */}
   {currentArea.length > 0 && (
-        isFullscreen ? (
-          <div className="absolute left-1/2 -translate-x-1/2 bottom-4 z-[1100] p-3 rounded-lg bg-blue-50/95 border border-blue-200 shadow">
-            <div className="flex items-center space-x-2">
-              <div className="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
-                <svg width="12" height="12" className="text-white" fill="currentColor" viewBox="0 0 20 20">
-                  <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/>
-                </svg>
-              </div>
-              <div>
-  <p className="text-sm font-medium text-blue-800">{mode === 'measure' ? 'Measuring distance (press M to toggle)' : 'Drawing area'}</p>
-  <p className="text-xs text-blue-600">{currentArea.length} points selected{mode === 'measure' ? ' • Add is disabled in Measure' : (currentArea.length >= 3 ? ' • Click "Add" to complete' : ` • ${3 - currentArea.length} more points needed`)}</p>
-              </div>
+        <div className="absolute left-1/2 -translate-x-1/2 bottom-4 z-[1100] p-3 rounded-lg bg-blue-50/95 border border-blue-200 shadow">
+          <div className="flex items-center space-x-2">
+            <div className="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
+              <svg width="12" height="12" className="text-white" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/>
+              </svg>
+            </div>
+            <div>
+<p className="text-sm font-medium text-blue-800">{mode === 'measure' ? 'Measuring distance (press M to toggle)' : 'Drawing area'}</p>
+<p className="text-xs text-blue-600">{currentArea.length} points selected{mode === 'measure' ? ' • Add is disabled in Measure' : (currentArea.length >= 3 ? ' • Click "Add" to complete' : ` • ${3 - currentArea.length} more points needed`)}</p>
             </div>
           </div>
-        ) : (
-          <div className="p-4 bg-blue-50 border-t border-blue-200">
-            <div className="flex items-center space-x-2">
-              <div className="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
-                <svg width="12" height="12" className="text-white" fill="currentColor" viewBox="0 0 20 20">
-                  <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/>
-                </svg>
-              </div>
-              <div>
-  <p className="text-sm font-medium text-blue-800">{mode === 'measure' ? 'Measuring distance (press M to toggle)' : 'Drawing area'}</p>
-  <p className="text-xs text-blue-600">{currentArea.length} points selected{mode === 'measure' ? ' • Add is disabled in Measure' : (currentArea.length >= 3 ? ' • Click "Add" to complete' : ` • ${3 - currentArea.length} more points needed`)}</p>
-              </div>
-            </div>
-          </div>
-        )
+        </div>
       )}
     {(mode === 'edit-poly' || mode==='refine') && perimeter && (
         <div className="absolute left-1/2 -translate-x-1/2 bottom-4 z-[1100] p-3 rounded-lg bg-amber-50/95 border border-amber-200 shadow text-amber-900 text-sm">
@@ -2996,51 +3048,23 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     </div>
   );
 
-  const overlayTarget = (typeof window !== 'undefined' && document.getElementById('app-root')) || (typeof window !== 'undefined' ? document.body : null);
-  // Format scale with higher precision while trimming trailing zeros
-  function fmtScale(n: number) {
-    if (!isFinite(n)) return String(n);
-    const dec = Math.abs(n) >= 1 ? 4 : 6;
-    return n.toFixed(dec).replace(/0+$/, '').replace(/\.$/, '');
-  }
-  const overlay = isFullscreen && overlayTarget
-    ? createPortal(
-        <div id="measure-overlay" data-keep="true" className="fixed inset-0 z-[2147483647] bg-white overflow-hidden flex flex-col min-h-0" style={{zIndex:2147483647}}>
-          {content}
-          {mustCalibrate && mode !== 'calibrate' && mode !== 'calibrate-area' && (
-            <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
-              <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md border">
-                <h2 className="text-lg font-semibold text-gray-900 mb-2">Calibration required</h2>
-                <p className="text-sm text-gray-600 mb-4">Set the scale before measuring. Choose a known distance (Calibrate Distance) or a known area (Calibrate Area).</p>
-                <div className="flex items-center gap-3">
-                  <button onClick={() => setMode('calibrate')} className="flex-1 px-4 py-2 rounded-lg bg-orange-600 text-white hover:bg-orange-700">Calibrate Distance</button>
-                  <button onClick={() => setMode('calibrate-area')} className="flex-1 px-4 py-2 rounded-lg bg-orange-100 text-orange-900 hover:bg-orange-200">Calibrate Area</button>
-                </div>
-              </div>
+  return (
+    <div id="measure-overlay" data-keep="true" className="fixed inset-0 z-[2147483647] bg-white overflow-hidden flex flex-col min-h-0" style={{zIndex:2147483647}}>
+      {content}
+      {mustCalibrate && mode !== 'calibrate' && mode !== 'calibrate-area' && (
+        <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md border">
+            <h2 className="text-lg font-semibold text-gray-900 mb-2">Calibration required</h2>
+            <p className="text-sm text-gray-600 mb-4">Set the scale before measuring. Choose a known distance (Calibrate Distance) or a known area (Calibrate Area).</p>
+            <div className="flex items-center gap-3">
+              <button onClick={() => setMode('calibrate')} className="flex-1 px-4 py-2 rounded-lg bg-orange-600 text-white hover:bg-orange-700">Calibrate Distance</button>
+              <button onClick={() => setMode('calibrate-area')} className="flex-1 px-4 py-2 rounded-lg bg-orange-100 text-orange-900 hover:bg-orange-200">Calibrate Area</button>
             </div>
-          )}
-        </div>,
-        overlayTarget
-      )
-    : null;
-  const launcher = !isFullscreen && imageLoaded
-    ? createPortal(
-        <button
-          type="button"
-          onClick={() => setIsFullscreen(true)}
-          className="fixed bottom-6 right-6 z-[99998] px-4 py-2 rounded-lg bg-blue-600 text-white shadow-lg hover:bg-blue-700 focus:outline-none"
-          title="Open Measure Fullscreen"
-        >
-          Measure Fullscreen
-        </button>,
-        document.body
-      )
-    : null;
-  return <>
-    {content}
-    {overlay}
-    {!isFullscreen && launcher}
-  </>;
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Douglas–Peucker polyline simplification (closed polygon supported)

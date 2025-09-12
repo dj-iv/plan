@@ -1,0 +1,45 @@
+/* PDF.js related styles */
+
+/* Hide annotation layer elements */
+.react-pdf__Page__annotations.annotationLayer {
+  display: none;
+}
+
+/* Hide text layer elements */
+.react-pdf__Page__textContent.textLayer {
+  display: none;
+}
+
+/* Ensure the page canvas takes proper space */
+.react-pdf__Page__canvas {
+  margin: 0 auto;
+  max-width: 100%;
+  height: auto !important;
+}
+
+/* Styles for the Page component container */
+.react-pdf__Page {
+  position: relative;
+  overflow: hidden;
+  background-color: white;
+}
+
+/* Styling for loading and error states */
+.react-pdf-message {
+  padding: 20px;
+  color: #666;
+  background: #f8f8f8;
+  border-radius: 8px;
+  text-align: center;
+  margin: 20px 0;
+}
+
+.react-pdf__message--loading {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
+.react-pdf__message--error {
+  background: #ffebee;
+  color: #c62828;
+}

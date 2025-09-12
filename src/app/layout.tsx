@@ -4,7 +4,7 @@ import "./globals.css";
 import ClientOnly from "@/components/ClientOnly";
 
 export const metadata: Metadata = {
-  title: "Floorplan Analyzer",
+  title: "Floorplan Analyser",
   description: "AI-powered floorplan analysis for area calculation and antenna placement",
 };
 
