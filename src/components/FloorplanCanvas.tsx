@@ -1,5 +1,6 @@
-
-import { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
+import Portal from './Portal';
 import SmartAutoPlaceButton from './SmartAutoPlaceButton';
 import useFixAutoPlaceButton from '@/hooks/useFixAutoPlaceButton';
 // Built-in deterministic full-coverage placement (self-contained to avoid module export issues)
@@ -117,6 +118,12 @@ interface FloorplanCanvasProps {
   onTrimmedImage?: (croppedDataUrl: string, quad?: {x:number;y:number}[], confidence?: number) => void;
   onScaleDetected?: (unitsPerPixel: number, unit: string, method?: string, confidence?: number) => void;
   onReset?: () => void; // callback to reset and go back to upload screen
+  onStateChange?: (state: any) => void; // notify parent for Save
+  onSaveProject?: () => void; // callback to save current project
+  loadedCanvasState?: any; // state to restore when loading a project
+  isSaving?: boolean; // saving state for Save button UI
+  justSaved?: boolean; // briefly show Saved ✓ after save completes
+  isUpdate?: boolean; // whether current project exists (changes button label)
 }
 
 interface Point {
@@ -152,7 +159,40 @@ interface Antenna {
   power?: number; // 0-100 percentage, optional to match antennaUtils
 }
 
-export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrate, requestCalibrateToken, onFullscreenChange, onTrimmedImage, onScaleDetected, onReset }: FloorplanCanvasProps) {
+// Snapshot of canvas state for undo/redo and save payloads
+interface Snapshot {
+  areas: Area[];
+  currentArea: Point[];
+  calibrationPoints: Point[];
+  calibrationAreaPoints: Point[];
+  calibrationAreaReal: string;
+  perimeter: Point[] | null;
+  perimeterRaw: Point[] | null;
+  holes: Point[][];
+  objects: ObjectRegion[];
+  justSavedObject: boolean;
+  autoHolesPreview: Point[][];
+  autoHolesIndex: number;
+  antennas: Antenna[];
+  excludeCurrent: Point[];
+  roi: {x:number;y:number;w:number;h:number} | null;
+  mode: 'select' | 'measure' | 'calibrate' | 'calibrate-area' | 'roi' | 'edit-poly' | 'exclude' | 'pick-hole' | 'edit-hole' | 'manual-exclude' | 'refine' | 'antenna';
+  manualRegions: Point[][];
+  manualHoles: Point[][];
+  manualResult: number | null;
+  selections: SelectionEntry[];
+  savedAreas: Point[][];
+  savedExclusions: Point[][];
+  zoom: number;
+  pan: {x:number;y:number};
+  canvasWidth: number;
+  canvasHeight: number;
+}
+
+export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrate, requestCalibrateToken, onFullscreenChange, onTrimmedImage, onScaleDetected, onReset, onStateChange, onSaveProject, loadedCanvasState, isSaving, justSaved, isUpdate }: FloorplanCanvasProps) {
+  useEffect(() => {
+    console.log('[Canvas] onSaveProject present:', typeof onSaveProject);
+  }, [onSaveProject]);
   // Use our custom hook to fix the Auto Place button
   // useFixAutoPlaceButton(); // Disabled - causing memory leak and unnecessary
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -180,6 +220,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   const [calibrationPoints, setCalibrationPoints] = useState<Point[]>([]);
   const [calibrationReal, setCalibrationReal] = useState<string>("");
   const [calibrationUnit, setCalibrationUnit] = useState<string>('meters');
+  const [displayUnit, setDisplayUnit] = useState<'m' | 'ft'>('m');
   // Calibrate by Area
   const [calibrationAreaPoints, setCalibrationAreaPoints] = useState<Point[]>([]);
   const [calibrationAreaReal, setCalibrationAreaReal] = useState<string>("");
@@ -235,46 +276,57 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   const [previewAntennas, setPreviewAntennas] = useState<Antenna[]>([]); // For live preview
   // When true, changing the radius slider will only resize existing antenna circles (visual coverage) without re-placement.
   const [lockPositions, setLockPositions] = useState<boolean>(true);
-  
-  // Redraw canvas when antennas, preview, or coverage settings change
+  // Track previous mode to react on mode change transitions
+  const prevModeRef = useRef<typeof mode>(mode);
   useEffect(() => {
-    console.log('Antenna state changed, redrawing canvas. Antennas:', antennas.length, 'Preview:', previewAntennas.length, 'Coverage:', showCoverage);
-    if (imageLoaded) {
-      drawCanvas();
+    // If leaving measure mode, clear the measurement path lines
+    if (prevModeRef.current === 'measure' && mode !== 'measure') {
+      setCurrentArea([]);
     }
-  }, [antennas, previewAntennas, showCoverage, showRadiusBoundary]);
-  
-  // History for Undo: snapshot all relevant measurable state
-  type Snapshot = {
-    areas: Area[];
-    currentArea: Point[];
-    calibrationPoints: Point[];
-    calibrationAreaPoints: Point[];
-    calibrationAreaReal: string;
-    perimeter: Point[] | null;
-    perimeterRaw: Point[] | null;
-    holes: Point[][];
-    objects: ObjectRegion[];
-    justSavedObject: boolean;
-    autoHolesPreview: Point[][];
-    autoHolesIndex: number;
-    antennas: Antenna[]; // Added for antenna state
-    excludeCurrent: Point[];
-    roi: {x:number;y:number;w:number;h:number} | null;
-    mode: typeof mode;
-    manualRegions: Point[][];
-    manualHoles: Point[][];
-    manualResult: number | null;
-    selections: SelectionEntry[];
-    savedAreas: Point[][];
-    savedExclusions: Point[][];
-  };
+    prevModeRef.current = mode;
+  }, [mode]);
 
   const historyRef = useRef<Snapshot[]>([]);
   const redoHistoryRef = useRef<Snapshot[]>([]);
   const undoRef = useRef<() => void>();
   const redoRef = useRef<() => void>();
   const draggingVertexIdxRef = useRef<number | null>(null);
+
+  // Utility function to scale coordinates when loading saved state
+  const scaleCoordinates = useCallback((coords: any, fromImageDimensions: {width: number, height: number}, toImageDimensions: {width: number, height: number}): any => {
+    if (!coords || fromImageDimensions.width === 0 || fromImageDimensions.height === 0) return coords;
+    
+    const scaleX = toImageDimensions.width / fromImageDimensions.width;
+    const scaleY = toImageDimensions.height / fromImageDimensions.height;
+    
+    if (Array.isArray(coords)) {
+      return coords.map(item => {
+        if (item && typeof item === 'object' && 'x' in item && 'y' in item) {
+          return { ...item, x: item.x * scaleX, y: item.y * scaleY };
+        } else if (Array.isArray(item)) {
+          return scaleCoordinates(item, fromImageDimensions, toImageDimensions);
+        }
+        return item;
+      });
+    } else if (coords && typeof coords === 'object' && 'x' in coords && 'y' in coords) {
+      return { ...coords, x: coords.x * scaleX, y: coords.y * scaleY };
+    } else if (coords && typeof coords === 'object') {
+      const result: any = {};
+      for (const [key, value] of Object.entries(coords)) {
+        if (key === 'position' && value && typeof value === 'object' && 'x' in value && 'y' in value) {
+          const v: any = value as any;
+          result[key] = { ...v, x: (v.x as number) * scaleX, y: (v.y as number) * scaleY };
+        } else if (typeof value === 'object') {
+          result[key] = scaleCoordinates(value, fromImageDimensions, toImageDimensions);
+        } else {
+          result[key] = value;
+        }
+      }
+      return result;
+    }
+    
+    return coords;
+  }, []);
   const draggingHoleIndexRef = useRef<number | null>(null);
   const draggingAntennaIdRef = useRef<string | null>(null);
   const draggingTargetRef = useRef<'perimeter' | 'currentArea' | 'calArea' | 'hole' | null>(null);
@@ -283,47 +335,136 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   // Mandatory calibration gating
   const mustCalibrate = !scale;
 
+  // Unit conversion helpers
+  const unitToMetersFactor = useCallback((u: string): number => {
+    switch ((u || '').toLowerCase()) {
+      case 'm':
+      case 'meter':
+      case 'meters':
+        return 1;
+      case 'cm':
+      case 'centimeter':
+      case 'centimeters':
+        return 0.01;
+      case 'mm':
+      case 'millimeter':
+      case 'millimeters':
+        return 0.001;
+      case 'ft':
+      case 'foot':
+      case 'feet':
+        return 0.3048;
+      case 'in':
+      case 'inch':
+      case 'inches':
+        return 0.0254;
+      default:
+        return 1; // fallback meters
+    }
+  }, []);
+  const metersToUnitFactor = useCallback((u: string): number => {
+    const f = unitToMetersFactor(u);
+    return f ? (1 / f) : 1;
+  }, [unitToMetersFactor]);
+
+  // Display-only formatters (keep internal math in meters/m²)
+  const formatDistanceDisplay = useCallback((metersVal: number) => {
+    return displayUnit === 'ft'
+      ? `${(metersVal * 3.28084).toFixed(2)} ft`
+      : `${metersVal.toFixed(2)} m`;
+  }, [displayUnit]);
+
+  const formatAreaDisplay = useCallback((m2: number) => {
+    // 1 m² = 10.7639104167 ft²
+    return displayUnit === 'ft'
+      ? `${(m2 * 10.7639104167).toFixed(2)} ft²`
+      : `${m2.toFixed(2)} m²`;
+  }, [displayUnit]);
+
   // Load image when imageUrl changes
   useEffect(() => {
+    console.log('FloorplanCanvas: Loading image from URL:', imageUrl);
     if (!imageUrl) {
       setImage(null);
       setImageLoaded(false);
       return;
     }
 
-    setImageLoaded(false);
-    const img = new Image();
-
-    img.onload = () => {
-      setImage(img);
-
-      // Calculate display size to fit available container width while preserving aspect ratio (avoid height-driven jitter)
-      const recalc = () => {
-        const container = containerRef.current;
-        if (!container) return;
-        const availW = container.clientWidth || window.innerWidth;
-        const scale = Math.min(availW / img.width, 1);
-        const displayWidth = Math.max(1, Math.floor(img.width * scale));
-        const displayHeight = Math.max(1, Math.floor(img.height * scale));
-        setCanvasSize(prev => {
-          if (Math.abs((prev?.width||0) - displayWidth) < 2 && Math.abs((prev?.height||0) - displayHeight) < 2) return prev;
-          return { width: displayWidth, height: displayHeight };
-        });
-        setImageLoaded(true);
-      };
-      recalc();
-    };
-    
-    img.onerror = () => {
-      console.error('Failed to load image');
-      // Don't clear an already-visible image; only prevent switching
-      if (!image) {
-        alert('Failed to load image. Please try a different file.');
-        setImageLoaded(false);
+    const loadImage = async () => {
+      // Ensure authentication for Firebase Storage URLs
+      if (imageUrl.includes('firebasestorage.googleapis.com')) {
+        try {
+          const { ensureAnonymousAuth } = await import('@/lib/firebaseAuth');
+          await ensureAnonymousAuth();
+          console.log('FloorplanCanvas: Authentication ensured for Firebase Storage');
+        } catch (authError) {
+          console.error('FloorplanCanvas: Failed to authenticate for Firebase Storage:', authError);
+        }
       }
+
+      setImageLoaded(false);
+      const img = new Image();
+
+      img.onload = () => {
+        console.log('FloorplanCanvas: Image loaded successfully', { width: img.width, height: img.height });
+        setImage(img);
+
+        // If loadedCanvasState has a saved canvas size, use it for display
+        if (loadedCanvasState && loadedCanvasState.canvasWidth && loadedCanvasState.canvasHeight) {
+          setCanvasSize({ width: loadedCanvasState.canvasWidth, height: loadedCanvasState.canvasHeight });
+          setImageLoaded(true);
+        } else {
+          // Calculate display size to fit available container width while preserving aspect ratio (avoid height-driven jitter)
+          const container = containerRef.current;
+          if (!container) return;
+          const availW = container.clientWidth || window.innerWidth;
+          const scale = Math.min(availW / img.width, 1);
+          const displayWidth = Math.max(1, Math.floor(img.width * scale));
+          const displayHeight = Math.max(1, Math.floor(img.height * scale));
+          setCanvasSize(prev => {
+            if (Math.abs((prev?.width||0) - displayWidth) < 2 && Math.abs((prev?.height||0) - displayHeight) < 2) return prev;
+            return { width: displayWidth, height: displayHeight };
+          });
+          setImageLoaded(true);
+        }
+      };
+      
+      img.onerror = (error) => {
+        console.error('Failed to load image from URL:', imageUrl, 'Error:', error);
+        // Check if it's a Firebase Storage URL
+        if (imageUrl.includes('firebasestorage.googleapis.com')) {
+          console.error('Firebase Storage URL failed. This might be a CORS or authentication issue.');
+          
+          // Try to fetch the URL directly to get more detailed error information
+          fetch(imageUrl)
+            .then(response => {
+              console.log('Direct fetch response:', response.status, response.statusText);
+              if (!response.ok) {
+                return response.text().then(text => {
+                  console.error('Fetch response body:', text);
+                });
+              }
+            })
+            .catch(fetchError => {
+              console.error('Direct fetch failed:', fetchError);
+            });
+        }
+        // Don't clear an already-visible image; only prevent switching
+        if (!image) {
+          alert('Failed to load image. Please try a different file.');
+          setImageLoaded(false);
+        }
+      };
+      
+      // Add crossOrigin for Firebase Storage URLs
+      if (imageUrl.includes('firebasestorage.googleapis.com')) {
+        img.crossOrigin = 'anonymous';
+      }
+      
+      img.src = imageUrl;
     };
-    
-    img.src = imageUrl;
+
+    loadImage();
   }, [imageUrl]);
 
   // Scroll to top and notify parent when ready
@@ -340,6 +481,16 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     const recalc = () => {
       const container = containerRef.current;
       if (!container) return;
+      // If we loaded a project with saved canvas size, keep that size
+      if (loadedCanvasState?.canvasWidth && loadedCanvasState?.canvasHeight) {
+        setCanvasSize(prev => {
+          const displayWidth = loadedCanvasState.canvasWidth as number;
+          const displayHeight = loadedCanvasState.canvasHeight as number;
+          if (Math.abs((prev?.width||0) - displayWidth) < 2 && Math.abs((prev?.height||0) - displayHeight) < 2) return prev;
+          return { width: displayWidth, height: displayHeight };
+        });
+        return;
+      }
       const availW = container.clientWidth || window.innerWidth;
       const scaleFit = Math.min(availW / image.width, 1);
       const displayWidth = Math.max(1, Math.floor(image.width * scaleFit));
@@ -419,13 +570,12 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     if (imageLoaded && image && canvasSize.width > 0) {
       drawCanvas();
     }
-  }, [imageLoaded, image, canvasSize, areas, currentArea, mode, calibrationPoints, calibrationAreaPoints, holes, excludeCurrent, autoHolesPreview, zoom, pan, roi, perimeter]);
+  }, [imageLoaded, image, canvasSize, areas, currentArea, mode, calibrationPoints, calibrationAreaPoints, holes, excludeCurrent, autoHolesPreview, zoom, pan, roi, perimeter, antennas, previewAntennas, showCoverage, showRadiusBoundary, antennaRange]);
 
-  // Auto-enter calibration if no scale is set
+  // Show the calibration chooser overlay until the user explicitly picks a mode
+  // (Avoid auto-switching to 'calibrate' which could make the overlay flash briefly.)
   useEffect(() => {
-    if (imageLoaded && mustCalibrate && mode !== 'calibrate' && mode !== 'calibrate-area') {
-      setMode('calibrate');
-    }
+    // Intentionally no automatic mode change here; overlay prompts the user.
   }, [imageLoaded, mustCalibrate, mode]);
 
   // Recompute areas when scale changes
@@ -447,6 +597,44 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     const total = Math.max(0, sumRegions - sumHoles);
     setManualResult(total);
   }, [manualRegions, manualHoles, scale, scaleUnit]);
+
+  // Notify parent with current canvas state for Save functionality
+  useEffect(() => {
+    if (!onStateChange) return;
+    const currentState = {
+      antennas,
+      areas,
+      scale,
+      showCoverage,
+      showRadiusBoundary,
+      antennaRange,
+      calibrationPoints,
+      calibrationAreaPoints,
+      calibrationAreaReal,
+      perimeter,
+      perimeterRaw,
+      holes,
+      objects,
+      autoHolesPreview,
+      autoHolesIndex,
+      excludeCurrent,
+      roi,
+      mode,
+      manualRegions,
+      manualHoles,
+      manualResult,
+      selections,
+      savedAreas,
+      savedExclusions,
+      zoom,
+      pan,
+      canvasWidth: canvasSize.width,
+      canvasHeight: canvasSize.height,
+      originalImageWidth: image?.width || 0,
+      originalImageHeight: image?.height || 0,
+    };
+    try { onStateChange(currentState); } catch {}
+  }, [onStateChange, antennas, areas, scale, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, autoHolesPreview, autoHolesIndex, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions, zoom, pan, canvasSize.width, canvasSize.height, image]);
 
   const drawCanvas = () => {
     if (!image || !imageLoaded) return;
@@ -615,7 +803,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
         if (mode === 'measure' && image && scale) {
           const scaleX = image.width / canvasSize.width;
           const scaleY = image.height / canvasSize.height;
-          const formatDist = (val: number) => `${val.toFixed(2)} ${scaleUnit}`;
+          const formatDist = (metersVal: number) => formatDistanceDisplay(metersVal);
 
           // Helper to draw a small label at a canvas position
           const drawLabel = (x: number, y: number, text: string) => {
@@ -651,12 +839,12 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
             const b = currentArea[i];
             const dx = (b.x - a.x) * scaleX;
             const dy = (b.y - a.y) * scaleY;
-            const segUnits = Math.hypot(dx, dy) * scale;
-            totalUnits += segUnits;
+            const segMeters = Math.hypot(dx, dy) * scale; // scale is meters per pixel
+            totalUnits += segMeters;
             // mid-point for label in canvas coords
             const mx = (a.x + b.x) / 2;
             const my = (a.y + b.y) / 2;
-            drawLabel(mx, my, formatDist(segUnits));
+            drawLabel(mx, my, formatDist(segMeters));
           }
 
           // Show cumulative path near the last point
@@ -1067,7 +1255,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       ctx.fillText(label, centerX, centerY - 10);
 
   if (typeof area === 'number') {
-        ctx.fillText(`${area.toFixed(2)} m²`, centerX, centerY + 10);
+  ctx.fillText(`${formatAreaDisplay(area)}`, centerX, centerY + 10);
       }
     }
   };
@@ -1092,7 +1280,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     }
     area = Math.abs(area) / 2;
     
-    // Convert from pixels to real units
+    // Convert from pixels to real area in square meters (scale is meters per pixel)
     return area * scale * scale;
   };
 
@@ -1336,16 +1524,16 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
         setSavedExclusions(arr => [...arr, holePoly.map(p=>({...p}))]);
       }
       // Reset interactive state so new object starts clean
-      setAutoHolesPreview([]);
-      setAutoHolesIndex(-1);
-      setRoi(null);
-      setPerimeter(null);
-      setPerimeterRaw(null);
-      setPerimeterConfidence(null);
-      setHoles([]);
-      setExcludeCurrent([]);
-      setCurrentArea([]);
-      setMode('select');
+  setAutoHolesPreview([]);
+  setAutoHolesIndex(-1);
+  setRoi(null);
+  setPerimeter(null);
+  setPerimeterRaw(null);
+  setPerimeterConfidence(null);
+  setHoles([]);
+  setExcludeCurrent([]);
+  setCurrentArea([]);
+  // Stay in pick-hole (Exclude Auto) mode for consecutive adds
       return;
     }
     // Detected object: add net area
@@ -1364,13 +1552,13 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       setSavedAreas(arr => [...arr, perimeter.map(p=>({...p}))]);
       if (holes.length) setSavedExclusions(arr => [...arr, ...holes.map(h=>h.map(p=>({...p})))]);
     // Reset interactive state so next object starts clean
-    setPerimeter(null);
-    setPerimeterRaw(null);
-    setPerimeterConfidence(null);
-    setHoles([]);
-    setExcludeCurrent([]);
-    setRoi(null);
-    setMode('select');
+  setPerimeter(null);
+  setPerimeterRaw(null);
+  setPerimeterConfidence(null);
+  setHoles([]);
+  setExcludeCurrent([]);
+  setRoi(null);
+  // Keep current mode; do not force 'select' here
     return;
     }
     // Manual polygon: add positive (area) or negative (exclusion)
@@ -1395,7 +1583,10 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     // Reset interactive state for a fresh start
     setCurrentArea([]);
     setExcludeCurrent([]);
-    setMode('select');
+    // Stay in manual-exclude to allow consecutive exclusions; otherwise default to select
+    if (mode !== 'manual-exclude') {
+      setMode('select');
+    }
       return;
     }
     alert('Nothing to add. Draw an area or detect one first.');
@@ -1431,6 +1622,8 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     const snap: Snapshot = {
       areas: areas.map(a => ({ id: a.id, points: a.points.map(p=>({...p})), area: a.area })),
       currentArea: currentArea.map(p=>({...p})),
+      // persist scale value inside history snapshot for consistency
+      // (not used by undo directly, but included in parent save payload)
       calibrationPoints: calibrationPoints.map(p=>({...p})),
       calibrationAreaPoints: calibrationAreaPoints.map(p=>({...p})),
       calibrationAreaReal,
@@ -1449,8 +1642,12 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       manualHoles: manualHoles.map(r=> r.map(p=>({...p}))),
       manualResult,
       selections: selections.map(s => ({ ...s })),
-  savedAreas: savedAreas.map(poly => poly.map(p=>({...p}))),
-  savedExclusions: savedExclusions.map(poly => poly.map(p=>({...p}))),
+      savedAreas: savedAreas.map(poly => poly.map(p=>({...p}))),
+      savedExclusions: savedExclusions.map(poly => poly.map(p=>({...p}))),
+      zoom,
+      pan,
+      canvasWidth: canvasSize.width,
+      canvasHeight: canvasSize.height,
     };
     historyRef.current.push(snap);
     if (historyRef.current.length > 50) historyRef.current.shift();
@@ -1487,6 +1684,10 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       selections: selections.map(s => ({ ...s })),
       savedAreas: savedAreas.map(poly => poly.map(p=>({...p}))),
       savedExclusions: savedExclusions.map(poly => poly.map(p=>({...p}))),
+      zoom,
+      pan,
+      canvasWidth: canvasSize.width,
+      canvasHeight: canvasSize.height,
     };
     redoHistoryRef.current.push(currentSnap);
     if (redoHistoryRef.current.length > 50) redoHistoryRef.current.shift();
@@ -1555,6 +1756,10 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       selections: selections.map(s => ({ ...s })),
       savedAreas: savedAreas.map(poly => poly.map(p=>({...p}))),
       savedExclusions: savedExclusions.map(poly => poly.map(p=>({...p}))),
+      zoom,
+      pan,
+      canvasWidth: canvasSize.width,
+      canvasHeight: canvasSize.height,
     };
     historyRef.current.push(currentSnap);
     if (historyRef.current.length > 50) historyRef.current.shift();
@@ -1589,6 +1794,100 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     redoRef.current = redo;
   }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions]);
 
+  // Restore loaded canvas state with coordinate scaling
+  useEffect(() => {
+    if (!loadedCanvasState || !image) return;
+    
+    // Use saved canvas size for display if available
+    const savedImageDimensions = {
+      width: loadedCanvasState.originalImageWidth || loadedCanvasState.canvasWidth || 0,
+      height: loadedCanvasState.originalImageHeight || loadedCanvasState.canvasHeight || 0
+    };
+
+    // If saved canvas size is available, force display size to match
+    if (loadedCanvasState.canvasWidth && loadedCanvasState.canvasHeight) {
+      setCanvasSize({ width: loadedCanvasState.canvasWidth, height: loadedCanvasState.canvasHeight });
+    }
+
+    const currentImageDimensions = {
+      width: image.width,
+      height: image.height
+    };
+    
+    // Only scale if dimensions are different
+    const needsScaling = savedImageDimensions.width !== currentImageDimensions.width || 
+                        savedImageDimensions.height !== currentImageDimensions.height;
+    
+    console.log('Restoring canvas state:', {
+      savedDimensions: savedImageDimensions,
+      currentDimensions: currentImageDimensions,
+      needsScaling
+    });
+    
+    // Restore all the state, scaling coordinates if needed
+    const scaleIfNeeded = needsScaling ? 
+      (coords: any) => scaleCoordinates(coords, savedImageDimensions, currentImageDimensions) : 
+      (coords: any) => coords;
+
+    if (loadedCanvasState.antennas) setAntennas(scaleIfNeeded(loadedCanvasState.antennas));
+    if (loadedCanvasState.areas) setAreas(scaleIfNeeded(loadedCanvasState.areas));
+  if (loadedCanvasState.showCoverage !== undefined) setShowCoverage(!!loadedCanvasState.showCoverage);
+  if (loadedCanvasState.showRadiusBoundary !== undefined) setShowRadiusBoundary(!!loadedCanvasState.showRadiusBoundary);
+  if (loadedCanvasState.antennaRange !== undefined && typeof loadedCanvasState.antennaRange === 'number') setAntennaRange(loadedCanvasState.antennaRange);
+    if (loadedCanvasState.calibrationPoints) setCalibrationPoints(scaleIfNeeded(loadedCanvasState.calibrationPoints));
+    if (loadedCanvasState.calibrationAreaPoints) setCalibrationAreaPoints(scaleIfNeeded(loadedCanvasState.calibrationAreaPoints));
+    if (loadedCanvasState.calibrationAreaReal !== undefined) setCalibrationAreaReal(loadedCanvasState.calibrationAreaReal);
+    if (loadedCanvasState.perimeter) setPerimeter(scaleIfNeeded(loadedCanvasState.perimeter));
+    if (loadedCanvasState.perimeterRaw) setPerimeterRaw(scaleIfNeeded(loadedCanvasState.perimeterRaw));
+    if (loadedCanvasState.holes) setHoles(scaleIfNeeded(loadedCanvasState.holes));
+    if (loadedCanvasState.objects) setObjects(scaleIfNeeded(loadedCanvasState.objects));
+    if (loadedCanvasState.autoHolesPreview) setAutoHolesPreview(scaleIfNeeded(loadedCanvasState.autoHolesPreview));
+    if (loadedCanvasState.autoHolesIndex !== undefined) setAutoHolesIndex(loadedCanvasState.autoHolesIndex);
+    if (loadedCanvasState.excludeCurrent) setExcludeCurrent(scaleIfNeeded(loadedCanvasState.excludeCurrent));
+    if (loadedCanvasState.roi) setRoi(scaleIfNeeded(loadedCanvasState.roi));
+    if (loadedCanvasState.mode) setMode(loadedCanvasState.mode);
+    if (loadedCanvasState.manualRegions) setManualRegions(scaleIfNeeded(loadedCanvasState.manualRegions));
+    if (loadedCanvasState.manualHoles) setManualHoles(scaleIfNeeded(loadedCanvasState.manualHoles));
+    if (loadedCanvasState.manualResult !== undefined) setManualResult(loadedCanvasState.manualResult);
+    if (loadedCanvasState.selections) setSelections(loadedCanvasState.selections);
+    if (loadedCanvasState.savedAreas) setSavedAreas(scaleIfNeeded(loadedCanvasState.savedAreas));
+    if (loadedCanvasState.savedExclusions) setSavedExclusions(scaleIfNeeded(loadedCanvasState.savedExclusions));
+
+    // Restore scale value for antenna circles and calibration
+    if (loadedCanvasState.scale !== undefined && loadedCanvasState.scale !== null) {
+      if (typeof loadedCanvasState.scale === 'number') {
+        // If scaling needed, scale the value proportionally
+        if (needsScaling) {
+          const scaleRatio = (savedImageDimensions.width / currentImageDimensions.width + savedImageDimensions.height / currentImageDimensions.height) / 2;
+          onScaleDetected && onScaleDetected(loadedCanvasState.scale * scaleRatio, scaleUnit, 'restored', 1.0);
+        } else {
+          onScaleDetected && onScaleDetected(loadedCanvasState.scale, scaleUnit, 'restored', 1.0);
+        }
+      }
+    }
+
+    // Restore zoom and pan, scaling if needed
+    if (loadedCanvasState.zoom !== undefined) {
+      if (needsScaling && typeof loadedCanvasState.zoom === 'number') {
+        // Scale zoom proportionally to image size change (average of X/Y)
+        const zoomScale = ((currentImageDimensions.width / savedImageDimensions.width) + (currentImageDimensions.height / savedImageDimensions.height)) / 2;
+        setZoom(loadedCanvasState.zoom * zoomScale);
+      } else {
+        setZoom(loadedCanvasState.zoom);
+      }
+    }
+    if (loadedCanvasState.pan !== undefined) {
+      if (needsScaling && loadedCanvasState.pan && typeof loadedCanvasState.pan.x === 'number' && typeof loadedCanvasState.pan.y === 'number') {
+        setPan({
+          x: loadedCanvasState.pan.x * (currentImageDimensions.width / savedImageDimensions.width),
+          y: loadedCanvasState.pan.y * (currentImageDimensions.height / savedImageDimensions.height)
+        });
+      } else {
+        setPan(loadedCanvasState.pan);
+      }
+    }
+  }, [loadedCanvasState, image, scaleCoordinates]);
+
   const calibrationDistancePx = () => {
     if (calibrationPoints.length < 2 || !image) return 0;
     const scaleX = image ? image.width / canvasSize.width : 1;
@@ -1607,8 +1906,9 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       alert('Select two points and enter a valid distance.');
       return;
     }
-    const s = real / px; // units per pixel (image coordinates)
-    onCalibrate && onCalibrate(s, calibrationUnit);
+    const unitsPerPixel = real / px; // in selected units per pixel
+    const metersPerPixel = unitsPerPixel * unitToMetersFactor(calibrationUnit);
+    onCalibrate && onCalibrate(metersPerPixel, calibrationUnit);
     setCalibrationPoints([]);
     setCalibrationReal('');
     setMode('select');
@@ -1640,9 +1940,10 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     const pxArea = areaPixels(calibrationAreaPoints);
     if (!pxArea || !isFinite(pxArea)) { alert('Invalid pixel area.'); return; }
   // If A_real = (unitsPerPixel^2) * A_pixels => unitsPerPixel = sqrt(A_real / A_pixels)
-    const upp = Math.sqrt(realArea / pxArea);
-    if (!isFinite(upp) || upp <= 0) { alert('Failed to compute scale from area.'); return; }
-    onCalibrate && onCalibrate(upp, calibrationUnit);
+    const unitsPerPixel = Math.sqrt(realArea / pxArea); // in selected units per pixel
+    if (!isFinite(unitsPerPixel) || unitsPerPixel <= 0) { alert('Failed to compute scale from area.'); return; }
+    const metersPerPixel = unitsPerPixel * unitToMetersFactor(calibrationUnit);
+    onCalibrate && onCalibrate(metersPerPixel, calibrationUnit);
     setCalibrationAreaPoints([]);
     setCalibrationAreaReal('');
     setMode('select');
@@ -1726,25 +2027,44 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
         }
       }
       
-      // Add antenna dragging support
+      // Antenna interactions: Alt=delete, Ctrl=select, else drag if near
       if (mode === 'antenna' && antennas.length > 0) {
         const canvas = canvasRef.current; if (!canvas) return;
         const rect = canvas.getBoundingClientRect();
         let cx = (e.clientX - rect.left) * (canvas.width / rect.width);
         let cy = (e.clientY - rect.top) * (canvas.height / rect.height);
         const wx = (cx - pan.x) / zoom; const wy = (cy - pan.y) / zoom;
-        
+        const isAlt = e.altKey === true;
+        const isCtrl = e.ctrlKey === true || e.metaKey === true;
+
         // Find the nearest antenna
         const thr = 15 / Math.max(0.2, zoom);
+        let nearest: { antenna: Antenna; index: number } | null = null;
         for (let i = 0; i < antennas.length; i++) {
           const antenna = antennas[i];
           const d = Math.hypot(wx - antenna.position.x, wy - antenna.position.y);
-          if (d <= thr) {
-            // Start dragging this antenna
-            draggingAntennaIdRef.current = antenna.id;
-            suppressClickRef.current = true; // Prevent click event from firing
+          if (d <= thr) { nearest = { antenna, index: i }; break; }
+        }
+
+        if (nearest) {
+          if (isAlt) {
+            // Alt+click: delete antenna
+            pushHistory();
+            setAntennas(prev => prev.filter(a => a.id !== nearest!.antenna.id));
+            if (selectedAntennaId === nearest.antenna.id) setSelectedAntennaId(null);
+            suppressClickRef.current = true; // prevent click handler from placing a new one
             return;
           }
+          if (isCtrl) {
+            // Ctrl+click: select/toggle selection
+            setSelectedAntennaId(prev => prev === nearest!.antenna.id ? null : nearest!.antenna.id);
+            suppressClickRef.current = true;
+            return;
+          }
+          // No modifier: start dragging
+          draggingAntennaIdRef.current = nearest.antenna.id;
+          suppressClickRef.current = true;
+          return;
         }
       }
       
@@ -2286,14 +2606,21 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     preserveViewRef.current = { compositeScale, centerImg };
   }
 
-  // Outside trigger to start calibrate
+  // Outside trigger to start calibrate — only when token increments
+  const lastCalibrateTokenRef = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (requestCalibrateToken !== undefined) {
-  setMode('calibrate');
-  setCalibrationPoints([]);
-  setCalibrationAreaPoints([]);
-  setCalibrationAreaReal('');
+    if (requestCalibrateToken === undefined) return;
+    if (lastCalibrateTokenRef.current === undefined) {
+      // Initialize baseline without triggering on first mount
+      lastCalibrateTokenRef.current = requestCalibrateToken;
+      return;
     }
+    if (requestCalibrateToken === lastCalibrateTokenRef.current) return;
+    lastCalibrateTokenRef.current = requestCalibrateToken;
+    setMode('calibrate');
+    setCalibrationPoints([]);
+    setCalibrationAreaPoints([]);
+    setCalibrationAreaReal('');
   }, [requestCalibrateToken]);
 
   // Global shortcuts: Ctrl/Cmd+Z undo, Ctrl+Y/Ctrl+Shift+Z redo, M toggle Measure/Select
@@ -2315,7 +2642,14 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       if (key === 'm') {
         e.preventDefault();
         if (mustCalibrate) { setMode('calibrate'); return; }
-        setMode(prev => (prev === 'measure' ? 'select' : 'measure'));
+        setMode(prev => {
+          if (prev === 'measure') {
+            // Turning off Measure: clear path lines
+            setCurrentArea([]);
+            return 'select';
+          }
+          return 'measure';
+        });
         return;
       }
     };
@@ -2496,7 +2830,16 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
             Select Area
           </button>
           <button type="button"
-            onClick={() => { if (mustCalibrate) { setMode('calibrate'); return; } setMode('measure'); }}
+            onClick={() => {
+              if (mustCalibrate) { setMode('calibrate'); return; }
+              if (mode === 'measure') {
+                // Toggle off: clear lines and switch to select
+                setCurrentArea([]);
+                setMode('select');
+              } else {
+                setMode('measure');
+              }
+            }}
             disabled={mustCalibrate}
             className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 ${
               mode === 'measure' 
@@ -2596,7 +2939,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
               <button type="button"
                 onClick={() => { if (mustCalibrate) { setMode('calibrate'); return; } setMode('roi'); setRoi(null); }}
                 disabled={busy || mustCalibrate}
-                className="bg-white/20 text-white px-4 py-2 rounded-lg font-medium hover:bg-white/30 transition-all transform hover:scale-105 shadow-sm disabled:opacity-50"
+                className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 ${mode==='roi' ? 'bg-white text-amber-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'} disabled:opacity-50`}
                 title="Select an object area (draw a rectangle)"
               >
                 Select Auto
@@ -2626,16 +2969,30 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
                 </div>
               )}
               {perimeterConfidence !== null && (
-                <span className="px-2 py-1 rounded-lg bg-white/20 text-white text-sm">conf {Math.round(perimeterConfidence*100)}%{netArea !== null ? ` • ${netArea.toFixed(2)} m²` : (perimeterArea ? ` • ${perimeterArea.toFixed(2)} m²` : '')}{holes.length ? ` • excl ${holes.length}` : ''}</span>
+                <span className="px-2 py-1 rounded-lg bg-white/20 text-white text-sm">conf {Math.round(perimeterConfidence*100)}%{netArea !== null ? ` • ${formatAreaDisplay(netArea)}` : (perimeterArea ? ` • ${formatAreaDisplay(perimeterArea)}` : '')}{holes.length ? ` • excl ${holes.length}` : ''}</span>
               )}
               {objects.length > 0 && (
                 <span className="px-2 py-1 rounded-lg bg-white/20 text-white text-sm">objects {objects.length}</span>
               )}
               
-              {/* Reset button moved to far right for safety */}
+              {/* Save and Reset buttons moved to far right */}
+              {onSaveProject && (
+                <button type="button"
+                  onClick={() => { console.log('Canvas Save clicked'); if (onSaveProject) { onSaveProject(); } else { try { (window as any).dispatchEvent(new Event('request-save')); } catch {} } }}
+                  disabled={isSaving}
+                  className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 shadow-sm ml-4 text-white ${
+                    isSaving ? 'bg-blue-400 cursor-not-allowed'
+                    : justSaved ? 'bg-green-600'
+                    : 'bg-blue-500 hover:bg-blue-600'
+                  }`}
+                  title="Save current project"
+                >
+                  {isSaving ? 'Saving…' : justSaved ? 'Saved ✓' : (isUpdate ? 'Update' : 'Save')}
+                </button>
+              )}
               <button type="button"
                 onClick={onReset}
-                className="bg-red-500 text-white px-4 py-2 rounded-lg font-medium hover:bg-red-600 transition-all transform hover:scale-105 shadow-sm ml-4"
+                className="bg-red-500 text-white px-4 py-2 rounded-lg font-medium hover:bg-red-600 transition-all transform hover:scale-105 shadow-sm ml-2"
                 title="Upload a different floorplan"
               >
                 Reset
@@ -2753,21 +3110,50 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
             
             <div className="flex items-center space-x-2 text-white text-sm">
               <span>Radius:</span>
+              {selectedAntennaId && (
+                <span className="px-2 py-0.5 rounded bg-white/20 text-white text-xs mr-1" title="Adjusting only the selected antenna">
+                  Editing selected
+                </span>
+              )}
+              {selectedAntennaId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sel = antennas.find(a => a.id === selectedAntennaId);
+                    if (!sel || sel.range === antennaRange) return;
+                    pushHistory();
+                    setAntennas(prev => prev.map(a => a.id === selectedAntennaId ? { ...a, range: antennaRange } : a));
+                  }}
+                  disabled={(antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) === antennaRange}
+                  className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-white text-xs border border-white/20 disabled:opacity-50 mr-1"
+                  title="Reset selected antenna to the global radius"
+                >
+                  Reset
+                </button>
+              )}
               <input
                 type="range"
                 min="1"
                 max="30"
                 step="0.5"
-                value={antennaRange}
+                value={selectedAntennaId ? (antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) : antennaRange}
                 onChange={(e) => {
                   const v = parseFloat(e.target.value);
-                  setAntennaRange(v);
-                  if (antennas.length > 0 && lockPositions) {
-                    // Just resize coverage (non-destructive)
-                    setAntennas(prev => prev.map(a => ({ ...a, range: v })));
-                  }
-                  if (previewAntennas.length > 0) {
-                    setPreviewAntennas(prev => prev.map(a => ({ ...a, range: v })));
+                  if (selectedAntennaId) {
+                    pushHistory();
+                    // Edit only the selected antenna's radius
+                    setAntennas(prev => prev.map(a => a.id === selectedAntennaId ? { ...a, range: v } : a));
+                  } else {
+                    // Global change: update default and only antennas that matched the previous default
+                    const old = antennaRange;
+                    if (v !== old) pushHistory();
+                    setAntennaRange(v);
+                    if (antennas.length > 0 && lockPositions) {
+                      setAntennas(prev => prev.map(a => (a.range === old ? { ...a, range: v } : a)));
+                    }
+                    if (previewAntennas.length > 0) {
+                      setPreviewAntennas(prev => prev.map(a => ({ ...a, range: v })));
+                    }
                   }
                 }}
                 className="w-24"
@@ -2777,15 +3163,24 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
                 min="1"
                 max="50"
                 step="0.1"
-                value={antennaRange}
+                value={selectedAntennaId ? (antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) : antennaRange}
                 onChange={(e) => {
                   const v = parseFloat(e.target.value) || 1;
-                  setAntennaRange(v);
-                  if (antennas.length > 0 && lockPositions) {
-                    setAntennas(prev => prev.map(a => ({ ...a, range: v })));
-                  }
-                  if (previewAntennas.length > 0) {
-                    setPreviewAntennas(prev => prev.map(a => ({ ...a, range: v })));
+                  if (selectedAntennaId) {
+                    pushHistory();
+                    // Edit only the selected antenna's radius
+                    setAntennas(prev => prev.map(a => a.id === selectedAntennaId ? { ...a, range: v } : a));
+                  } else {
+                    // Global change: update default and only antennas that matched the previous default
+                    const old = antennaRange;
+                    if (v !== old) pushHistory();
+                    setAntennaRange(v);
+                    if (antennas.length > 0 && lockPositions) {
+                      setAntennas(prev => prev.map(a => (a.range === old ? { ...a, range: v } : a)));
+                    }
+                    if (previewAntennas.length > 0) {
+                      setPreviewAntennas(prev => prev.map(a => ({ ...a, range: v })));
+                    }
                   }
                 }}
                 className="w-12 px-1 py-0.5 rounded bg-white/20 text-white text-center text-xs border border-white/30 focus:border-white/50 focus:outline-none"
@@ -2834,48 +3229,10 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       {scale ? (
             <div className="px-3 py-1.5 bg-white/20 text-white rounded-lg text-sm backdrop-blur-sm">
         📏 Scale: {(() => {
-          // Convert the scale to a meaningful display format
-          // scale is in [scaleUnit] per pixel
-          // We want to show 1cm = X meters (or appropriate conversion)
-          
-          let pixelsPerCm;
-          let scaleInMetersPerPixel;
-          
-          // First convert scale to meters per pixel
-          switch(scaleUnit) {
-            case 'meters':
-              scaleInMetersPerPixel = scale;
-              break;
-            case 'centimeters':
-              scaleInMetersPerPixel = scale / 100; // cm to m
-              break;
-            case 'millimeters':
-              scaleInMetersPerPixel = scale / 1000; // mm to m
-              break;
-            case 'feet':
-              scaleInMetersPerPixel = scale * 0.3048; // feet to m
-              break;
-            default:
-              scaleInMetersPerPixel = scale;
-          }
-          
-          // Calculate how many pixels = 1cm
-          pixelsPerCm = 0.01 / scaleInMetersPerPixel; // 1cm = 0.01m
-          
-          // Calculate what 1cm represents in the original plan scale
-          const metersPerCm = 0.01 / scaleInMetersPerPixel * scaleInMetersPerPixel;
-          
-          // For display, convert back to the appropriate unit
-          if (scaleInMetersPerPixel > 0.1) {
-            // Large scale - show in meters
-            return `1cm = ${(0.01 / scaleInMetersPerPixel).toFixed(1)}m`;
-          } else if (scaleInMetersPerPixel > 0.001) {
-            // Medium scale - show in centimeters  
-            return `1cm = ${(1 / scaleInMetersPerPixel).toFixed(0)}cm`;
-          } else {
-            // Small scale - show in millimeters
-            return `1cm = ${(10 / scaleInMetersPerPixel).toFixed(0)}mm`;
-          }
+          const mPerPx = scale;
+          const pxPerM = mPerPx > 0 ? (1 / mPerPx) : 0;
+          const ratio = pxPerM > 0 ? Math.ceil(pxPerM) : 0; // round up
+          return `1:${ratio}`;
         })()}
               {scaleConfidence !== null && (
                 <span className="ml-2 inline-flex items-center text-xs px-2 py-0.5 rounded bg-white/30 text-white">
@@ -2886,6 +3243,25 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
           ) : (
             <div className="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm">⚠️ No Scale Set</div>
           )}
+
+          {/* Display Unit Toggle */}
+          <div className="flex items-center ml-1">
+            <div className="bg-white/20 rounded-lg text-white text-xs overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setDisplayUnit('m')}
+                className={`px-2 py-1 ${displayUnit === 'm' ? 'bg-white/30 font-semibold' : 'hover:bg-white/10'}`}
+                title="Show distances/areas in meters"
+              >m</button>
+              <button
+                type="button"
+                onClick={() => setDisplayUnit('ft')}
+                className={`px-2 py-1 ${displayUnit === 'ft' ? 'bg-white/30 font-semibold' : 'hover:bg-white/10'}`}
+                title="Show distances/areas in feet"
+              >ft</button>
+            </div>
+          </div>
+
           
           {/* Refine Mode Instructions */}
           {mode === 'refine' && (
@@ -2909,17 +3285,13 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
               onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseLeave}
       onContextMenu={preventContext}
+      data-main-canvas="1"
       className={`border border-gray-200 ${isPanCursor ? 'cursor-grabbing' : 'cursor-crosshair'} shadow-lg rounded`}
               style={{ 
                 maxWidth: '100%',
                 height: 'auto'
               }}
             />
-      {mustCalibrate && mode !== 'calibrate' && mode !== 'calibrate-area' && (
-              <div className="absolute mt-4 p-2 rounded bg-amber-100 text-amber-900 border border-amber-200 shadow">
-        Please calibrate to begin. Use Calibrate Distance or Calibrate Area.
-              </div>
-            )}
           </div>
         ) : imageUrl ? (
           <div className="flex items-center justify-center h-64 text-gray-500">
@@ -2987,19 +3359,25 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
           </div>
           <div className="space-y-3 mb-4">
             {selections.map((s, index) => (
-              <div key={s.id} className="flex items-center justify-between p-3 bg-white rounded-lg border shadow-sm">{/* style={{ minWidth: '260px' }} */}
+              <div key={s.id} className="flex items-center justify-between p-3 bg-white rounded-lg border shadow-sm">
                 <div className="flex items-center space-x-3">
                   <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-orange-500 rounded-full flex items-center justify-center">
                     <span className="text-white text-xs font-bold">{index + 1}</span>
                   </div>
-                  <div>
-                    <p className="font-medium text-gray-900">{s.label || 'Area'}</p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="border rounded px-2 py-1 text-sm"
+                      placeholder={s.value >= 0 ? 'Area label' : 'Exclusion label'}
+                      value={s.label || ''}
+                      onChange={(e)=> setSelections(list => list.map(it => it.id===s.id ? { ...it, label: e.target.value } : it))}
+                      style={{ width: 140 }}
+                    />
                   </div>
                 </div>
-                  <div className="flex items-center space-x-3">
+                <div className="flex items-center space-x-3">
                   <div className="text-right">
                     <p className={`font-semibold ${s.value >= 0 ? 'text-blue-600' : 'text-red-600'}`}>
-                      {scale ? `${s.value.toFixed(2)} m²` : '—'}
+                      {scale ? formatAreaDisplay(s.value) : '—'}
                     </p>
                   </div>
                   <button onClick={() => { pushHistory(); setSelections(list => list.filter(it => it.id !== s.id)); }} className="w-6 h-6 bg-red-100 hover:bg-red-200 text-red-600 rounded-full flex items-center justify-center text-xs transition-colors">✕</button>
@@ -3007,11 +3385,31 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
               </div>
             ))}
           </div>
+          {selections.length > 0 && (
+            <div className="mb-3">
+              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">By label</h4>
+              <div className="space-y-1">
+                {(() => {
+                  const grouped = selections.reduce<Record<string, number>>((acc, s) => {
+                    const key = s.label || (s.value >= 0 ? 'Area' : 'Exclusion');
+                    acc[key] = (acc[key] || 0) + s.value;
+                    return acc;
+                  }, {});
+                  return Object.entries(grouped).map(([label, value]) => (
+                    <div key={label} className="flex items-center justify-between text-sm">
+                      <span className="text-gray-700">{label}</span>
+                      <span className={`font-medium ${value >= 0 ? 'text-blue-600' : 'text-red-600'}`}>{scale ? formatAreaDisplay(value) : '—'}</span>
+                    </div>
+                  ));
+                })()}
+              </div>
+            </div>
+          )}
           {scale && (
             <div className="p-3 bg-gradient-to-r from-blue-500 to-orange-500 rounded-lg text-white">
               <div className="flex items-center justify-between">
                 <h4 className="font-semibold">Total</h4>
-                <p className="text-lg font-bold">{consolidatedTotal.toFixed(2)} m²</p>
+                <p className="text-lg font-bold">{formatAreaDisplay(consolidatedTotal)}</p>
               </div>
             </div>
           )}
@@ -3048,22 +3446,71 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     </div>
   );
 
-  return (
-    <div id="measure-overlay" data-keep="true" className="fixed inset-0 z-[2147483647] bg-white overflow-hidden flex flex-col min-h-0" style={{zIndex:2147483647}}>
-      {content}
-      {mustCalibrate && mode !== 'calibrate' && mode !== 'calibrate-area' && (
-        <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
-          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md border">
-            <h2 className="text-lg font-semibold text-gray-900 mb-2">Calibration required</h2>
-            <p className="text-sm text-gray-600 mb-4">Set the scale before measuring. Choose a known distance (Calibrate Distance) or a known area (Calibrate Area).</p>
-            <div className="flex items-center gap-3">
-              <button onClick={() => setMode('calibrate')} className="flex-1 px-4 py-2 rounded-lg bg-orange-600 text-white hover:bg-orange-700">Calibrate Distance</button>
-              <button onClick={() => setMode('calibrate-area')} className="flex-1 px-4 py-2 rounded-lg bg-orange-100 text-orange-900 hover:bg-orange-200">Calibrate Area</button>
-            </div>
+  // Build calibration overlay (rendered via portal). Hide immediately once user enters calibration.
+  const shouldShowOverlay = mustCalibrate && (mode !== 'calibrate' && mode !== 'calibrate-area');
+  useEffect(() => {
+    // no-op; reserved for future analytics hooks
+  }, [shouldShowOverlay]);
+
+  const releaseModalRoot = useCallback(() => {
+    try {
+      const el = typeof document !== 'undefined' ? document.getElementById('modal-root') : null;
+      if (!el) return;
+      el.style.pointerEvents = 'none';
+      el.setAttribute('data-active', '0');
+    } catch {}
+  }, []);
+
+  // Ensure overlay fully releases interaction when entering calibrate modes
+  useEffect(() => {
+    if (mode === 'calibrate' || mode === 'calibrate-area') {
+      if ('requestAnimationFrame' in window) requestAnimationFrame(releaseModalRoot); else setTimeout(releaseModalRoot, 0);
+    }
+  }, [mode, releaseModalRoot]);
+
+  const handleChooseCalibrate = useCallback((which: 'calibrate'|'calibrate-area') => {
+    setMode(which);
+    if ('requestAnimationFrame' in window) requestAnimationFrame(releaseModalRoot); else setTimeout(releaseModalRoot, 0);
+  }, [releaseModalRoot]);
+
+  const overlay = shouldShowOverlay ? (
+    <Portal>
+      <div id="calibration-overlay" style={{ position: 'absolute', inset: 0 as any, zIndex: 2147483646, pointerEvents: 'auto' }}>
+        <div style={{ position: 'absolute', inset: 0 as any, background: 'rgba(0,0,0,0.35)' }} />
+        <div style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)', width: '100%', maxWidth: 520, background: '#fff', borderRadius: 12, boxShadow: '0 20px 40px rgba(0,0,0,0.35)', border: '1px solid rgba(0,0,0,0.08)', padding: 24 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 600, color: '#111827', marginBottom: 8 }}>Calibration required</h2>
+          <p style={{ fontSize: 14, color: '#4B5563', marginBottom: 16 }}>Set the scale before measuring. Choose a known distance (Calibrate Distance) or a known area (Calibrate Area).</p>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button onClick={() => handleChooseCalibrate('calibrate')} style={{ flex: 1, padding: '10px 16px', borderRadius: 8, background: '#EA580C', color: '#fff' }}>Calibrate Distance</button>
+            <button onClick={() => handleChooseCalibrate('calibrate-area')} style={{ flex: 1, padding: '10px 16px', borderRadius: 8, background: '#FFEDD5', color: '#7C2D12' }}>Calibrate Area</button>
           </div>
         </div>
-      )}
-    </div>
+      </div>
+    </Portal>
+  ) : null;
+
+  // Safety: when overlay hides, ensure the modal portal releases clicks
+  useEffect(() => {
+    if (shouldShowOverlay) return;
+    // Defer to next frame to run after unmount
+    if ('requestAnimationFrame' in window) requestAnimationFrame(releaseModalRoot); else setTimeout(releaseModalRoot, 0);
+  }, [shouldShowOverlay, releaseModalRoot]);
+
+  const contentZ = 2147483600; // slightly lower than overlay
+  const contentStyle: React.CSSProperties = { zIndex: contentZ };
+
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
+  // No fallback injection needed; overlay is rendered via portal only now.
+
+  return (
+    <>
+      <div id="measure-overlay" data-keep="true" className="fixed inset-0 bg-white overflow-hidden flex flex-col min-h-0" style={contentStyle}>
+        {content}
+      </div>
+  {mounted && overlay}
+    </>
   );
 }
 

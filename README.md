@@ -154,11 +154,35 @@ This project is optimized for Vercel deployment:
 Create a `.env.local` file for local development:
 
 ```bash
-# Firebase configuration (when implemented)
+# Firebase configuration
 NEXT_PUBLIC_FIREBASE_API_KEY=your_api_key
 NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your_auth_domain
 NEXT_PUBLIC_FIREBASE_PROJECT_ID=your_project_id
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your_bucket
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+NEXT_PUBLIC_FIREBASE_APP_ID=your_app_id
+
+# Restrict app sign-in to specific Google Workspace domains (comma-separated)
+NEXT_PUBLIC_ALLOWED_GOOGLE_DOMAINS=uctel.co.uk
 ```
+
+### Firebase Security Rules
+
+This repo includes `firestore.rules` and `storage.rules` to restrict access to authenticated users. Deploy them with the Firebase CLI:
+
+```powershell
+# Install Firebase CLI if needed
+npm i -g firebase-tools
+
+# Login and set the active project
+firebase login
+firebase use <your-project-id>
+
+# Deploy security rules
+firebase deploy --only firestore:rules,storage:rules
+```
+
+The app enforces Google sign-in and optionally restricts by domain via `NEXT_PUBLIC_ALLOWED_GOOGLE_DOMAINS`.
 
 ## License
 

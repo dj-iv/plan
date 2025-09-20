@@ -145,7 +145,10 @@ export default function FileUpload({ onFileUpload, onPdfImageReady }: FileUpload
           const preview = await handlePdf(file);
           
           // Send the preview to the parent component
-          onFileUpload(file, preview);
+            // Create a synthetic PNG file from the preview data URL
+            const blob = dataURLtoBlob(preview);
+            const pngFile = new File([blob], file.name.replace(/\.pdf$/i, '.png'), { type: 'image/png' });
+            onFileUpload(pngFile, preview);
         } catch (pdfError) {
           console.error("PDF processing failed:", pdfError);
           // The error message and helper are already shown by handlePdf
@@ -183,7 +186,7 @@ export default function FileUpload({ onFileUpload, onPdfImageReady }: FileUpload
       <div
         {...getRootProps()}
         className={`
-          border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-300 min-h-[300px] flex flex-col items-center justify-center
+          border-2 border-dashed rounded-2xl p-14 text-center cursor-pointer transition-all duration-300 min-h-[360px] flex flex-col items-center justify-center
           ${isDragActive 
             ? 'border-blue-400 bg-blue-50 transform scale-[1.02] shadow-lg' 
             : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50 hover:shadow-md'
@@ -247,9 +250,7 @@ export default function FileUpload({ onFileUpload, onPdfImageReady }: FileUpload
                   <p className="text-base text-gray-600 mb-1">
                     Supports PNG, JPG, PDF files up to 50MB
                   </p>
-                  <p className="text-sm text-gray-500">
-                    DWG files supported (beta) • Automatic scale detection included
-                  </p>
+                  {/* Removed DWG beta and auto-scale line per request */}
                 </div>
                 
                 {/* Feature highlights */}
