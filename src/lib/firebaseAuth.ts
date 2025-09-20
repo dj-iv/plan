@@ -16,8 +16,8 @@ function isEmailAllowed(email?: string | null): boolean {
 }
 
 export async function ensureAnonymousAuth(): Promise<void> {
-  // Backward-compatible name; this now ensures Google sign-in restricted by domain.
-  // Avoid double popups: wait for initial auth state restoration and guard concurrent sign-ins.
+  // Backward-compatible name; now only ensures we know auth state and validates domain.
+  // IMPORTANT: No automatic popups here to avoid auth/popup-blocked in production.
   const auth = getAuth();
 
   // Wait for first auth state to settle (cached session restore)
@@ -31,37 +31,7 @@ export async function ensureAnonymousAuth(): Promise<void> {
     }
     return;
   }
-
-  // Prevent overlapping popups using a simple module-scoped lock
-  // @ts-ignore
-  if ((window as any).__uctelSignInInProgress) {
-    // Wait until auth state changes to signed-in or timeout
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 8000);
-      const unsub = onAuthStateChanged(auth, (u) => {
-        if (u) { clearTimeout(timer); unsub(); resolve(); }
-      });
-    });
-    return;
-  }
-  // @ts-ignore
-  (window as any).__uctelSignInInProgress = true;
-  try {
-    const provider = new GoogleAuthProvider();
-    const allowed = getAllowedDomains();
-    if (allowed.length > 0) {
-      provider.setCustomParameters({ hd: allowed[0] });
-    }
-    const result = await signInWithPopup(auth, provider);
-    const signed = result.user as User;
-    if (!isEmailAllowed(signed.email)) {
-      try { await signOut(auth); } catch {}
-      throw new Error('Access denied: your Google account is not permitted.');
-    }
-  } finally {
-    // @ts-ignore
-    (window as any).__uctelSignInInProgress = false;
-  }
+  // No user: return silently; callers should present a Login button.
 }
 
 export function getCurrentUser(): User | null {

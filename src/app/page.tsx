@@ -90,9 +90,13 @@ export default function Home() {
     // initialize auth email and subscribe to changes
     const u = getCurrentUser();
     setAuthEmail(u?.email || null);
-    const unsub = onAuthChange(user => setAuthEmail(user?.email || null));
+    const unsub = onAuthChange(user => {
+      setAuthEmail(user?.email || null);
+      // refresh projects after sign-in/out
+      loadProjects();
+    });
     return unsub;
-  }, []);
+  }, [loadProjects]);
 
   const toggleProjectSelection = useCallback((projectId: string) => {
     setSelectedProjectIds(prev => {
