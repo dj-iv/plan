@@ -11,9 +11,10 @@ import { renderPdfToImage, renderPdfFallback, renderPdfAlternative } from '../ut
 interface FileUploadProps {
   onFileUpload: (file: File, previewUrl?: string) => void;
   onPdfImageReady?: (dataUrl: string) => void;
+  disabled?: boolean;
 }
 
-export default function FileUpload({ onFileUpload, onPdfImageReady }: FileUploadProps) {
+export default function FileUpload({ onFileUpload, onPdfImageReady, disabled = false }: FileUploadProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
@@ -178,7 +179,7 @@ export default function FileUpload({ onFileUpload, onPdfImageReady }: FileUpload
   'image/vnd.dwg': ['.dwg']
     },
     maxFiles: 1,
-    disabled: isProcessing
+    disabled: isProcessing || disabled
   });
 
   return (
@@ -192,7 +193,9 @@ export default function FileUpload({ onFileUpload, onPdfImageReady }: FileUpload
             : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50 hover:shadow-md'
           }
           ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}
+          ${disabled ? 'opacity-50 cursor-not-allowed pointer-events-none' : ''}
         `}
+        aria-disabled={disabled || isProcessing}
       >
         <input {...getInputProps()} />
         
@@ -274,6 +277,11 @@ export default function FileUpload({ onFileUpload, onPdfImageReady }: FileUpload
                     <span>Antenna coverage</span>
                   </div>
                 </div>
+                {disabled && (
+                  <div className="pt-4 text-sm text-gray-500">
+                    Please login with Google to upload files.
+                  </div>
+                )}
               </div>
             )}
           </div>

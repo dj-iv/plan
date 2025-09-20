@@ -98,9 +98,18 @@ export default function Home() {
       const u = getCurrentUser();
       setAuthEmail(u?.email || null);
       unsub = onAuthChange(user => {
-        setAuthEmail(user?.email || null);
-        // refresh projects after sign-in/out
-        loadProjects();
+        const email = user?.email || null;
+        setAuthEmail(email);
+        if (email) {
+          loadProjects();
+        } else {
+          // Signed out: clear loaded state/UI selections
+          setProjects([]);
+          setSelectedProjectIds(new Set());
+          setShowProjectList(false);
+          setCurrentProjectId(null);
+          setCurrentProjectName(null);
+        }
       });
     })();
     return () => { if (unsub) unsub(); };
@@ -273,6 +282,10 @@ export default function Home() {
   }, [uploadedFile, unit, currentProjectId, currentProjectName, loadProjects, computeStateHash]);
 
   const handleLoadProject = useCallback(async (projectId: string) => {
+    if (!authEmail) {
+      alert('Please login to load projects.');
+      return;
+    }
     try {
       setIsLoading(true);
       const projectData = await ProjectService.getProject(projectId);
@@ -324,8 +337,14 @@ export default function Home() {
 
   // Load projects on component mount
   useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
+    if (authEmail) {
+      loadProjects();
+    } else {
+      setProjects([]);
+      setSelectedProjectIds(new Set());
+      setShowProjectList(false);
+    }
+  }, [authEmail, loadProjects]);
 
   // Keep the logo width in sync with the title width
   useEffect(() => {
@@ -402,6 +421,7 @@ export default function Home() {
             <FileUpload 
               onFileUpload={handleFileUpload} 
               onPdfImageReady={(d) => setImageUrl(d)} 
+              disabled={!authEmail}
             />
             
             {uploadedFile && (
@@ -430,12 +450,12 @@ export default function Home() {
                 <button
                   onClick={() => setShowProjectList(v => !v)}
                   className="px-4 py-2 rounded-full bg-white/10 text-white border border-white/20 hover:bg-white/20 transition"
-                  disabled={isLoading}
-                  title={showProjectList ? 'Hide Projects' : 'Load Existing Projects'}
+                  disabled={!authEmail || isLoading}
+                  title={authEmail ? (showProjectList ? 'Hide Projects' : 'Load Existing Projects') : 'Login to manage projects'}
                 >
                   {showProjectList ? 'Hide Projects' : 'Load Projects'}
                 </button>
-                {showProjectList && (
+                {showProjectList && authEmail && (
                   <>
                     <input
                       value={search}
@@ -502,7 +522,7 @@ export default function Home() {
           </div>
 
           {/* Project List (wide) */}
-          {showProjectList && (
+          {showProjectList && authEmail && (
             <div className="w-full max-w-7xl mx-auto mt-4 bg-white rounded-2xl shadow-xl">
               {(() => {
                 const filtered = projects
