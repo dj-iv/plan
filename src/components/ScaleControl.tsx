@@ -26,7 +26,7 @@ export default function ScaleControl({ onScaleSet, currentScale, currentUnit, on
             </div>
             <div>
               <p className="text-sm font-medium text-green-800">Scale Configured</p>
-              <p className="text-xs text-green-600">1 pixel = {currentScale} {currentUnit}</p>
+              <p className="text-xs text-green-600">1 pixel = {currentScale} m ({currentUnit})</p>
             </div>
           </div>
         </div>

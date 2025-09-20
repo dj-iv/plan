@@ -40,7 +40,7 @@ export default function RootLayout({
                 kids.forEach(function(el){
                   if (!el) return;
                   var isApp = el.id === 'app-root';
-                  var isPortal = el.classList && el.classList.contains('nextjs-portal');
+                  var isPortal = (el.id === 'modal-root') || (el.classList && el.classList.contains('nextjs-portal'));
                   var isMeasure = el.id === 'measure-overlay' || (el.getAttribute && el.getAttribute('data-keep') === 'true');
                   var tag = (el.tagName||'').toLowerCase();
                   var okTag = tag === 'script' || tag === 'style';

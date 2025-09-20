@@ -1,0 +1,16 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Allow authenticated users from allowed domain to read and write project assets
+    function hasAllowedDomain() {
+      return isSignedIn() && request.auth.token.email.matches('.+@uctel\\.co\\.uk$');
+    }
+    match /projects/{projectId}/{allPaths=**} {
+      allow read, write: if hasAllowedDomain();
+    }
+  }
+}
