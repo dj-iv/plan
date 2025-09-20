@@ -49,7 +49,9 @@ function reconstructNestedPointArrays(flat: any): CanvasState {
 export class ProjectService {
   static async saveProject(projectData: SaveProjectRequest, existingProjectId?: string): Promise<string> {
     const projectId = existingProjectId || doc(collection(db, PROJECTS_COLLECTION)).id;
-    await ensureAnonymousAuth();
+  await ensureAnonymousAuth();
+  const uid = getAuth().currentUser?.uid;
+  if (!uid) throw new Error('Authentication required to save projects.');
     // Owner scoping removed; access is controlled via Google domain auth + rules
 
     let imageUrl: string | null = null;
@@ -108,6 +110,7 @@ export class ProjectService {
       description: projectData.description || '',
       createdAt: Timestamp.fromDate(now),
       updatedAt: Timestamp.fromDate(now),
+       lastOpenedAt: Timestamp.fromDate(now),
       version: 1,
       metadata: {
         originalFileName,
@@ -152,7 +155,9 @@ export class ProjectService {
   }
 
   static async getProjectList(): Promise<ProjectSummary[]> {
-    await ensureAnonymousAuth();
+  await ensureAnonymousAuth();
+  const uid = getAuth().currentUser?.uid;
+  if (!uid) throw new Error('Authentication required to list projects.');
     const base = collection(db, PROJECTS_COLLECTION);
     const qs = await getDocs(query(base, orderBy('updatedAt', 'desc')));
     const list: ProjectSummary[] = [];

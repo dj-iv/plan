@@ -32,7 +32,7 @@ export default function Home() {
   const [showProjectList, setShowProjectList] = useState<boolean>(false);
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState<string>('');
-  const [sortBy, setSortBy] = useState<'lastOpened'|'updated'|'name'|'antennas'>('lastOpened');
+  const [sortBy, setSortBy] = useState<'lastOpened'|'name'|'antennas'>('lastOpened');
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
   const [logoPxWidth, setLogoPxWidth] = useState<number | null>(null);
@@ -40,9 +40,9 @@ export default function Home() {
   useEffect(() => {
     try {
       const s = localStorage.getItem('projects.search');
-      const sb = localStorage.getItem('projects.sortBy');
-      if (s !== null) setSearch(s);
-      if (sb === 'lastOpened' || sb === 'updated' || sb === 'name' || sb === 'antennas') setSortBy(sb);
+  const sb = localStorage.getItem('projects.sortBy');
+  if (s !== null) setSearch(s);
+  if (sb === 'lastOpened' || sb === 'name' || sb === 'antennas') setSortBy(sb as any);
     } catch {}
   }, []);
   useEffect(() => {
@@ -282,7 +282,8 @@ export default function Home() {
   }, [uploadedFile, unit, currentProjectId, currentProjectName, loadProjects, computeStateHash]);
 
   const handleLoadProject = useCallback(async (projectId: string) => {
-    if (!authEmail) {
+    const currentEmail = getCurrentUser()?.email || authEmail;
+    if (!currentEmail) {
       alert('Please login to load projects.');
       return;
     }
@@ -333,7 +334,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [computeStateHash]);
+  }, [computeStateHash, authEmail]);
 
   // Load projects on component mount
   useEffect(() => {
@@ -342,7 +343,7 @@ export default function Home() {
     } else {
       setProjects([]);
       setSelectedProjectIds(new Set());
-      setShowProjectList(false);
+      // keep the toggle state; UI controls are disabled when logged out
     }
   }, [authEmail, loadProjects]);
 
@@ -469,7 +470,6 @@ export default function Home() {
                       className="px-3 py-2 rounded-full bg-white/90 text-gray-800 text-sm focus:outline-none shadow-sm"
                     >
                       <option value="lastOpened">Last opened</option>
-                      <option value="updated">Updated</option>
                       <option value="name">Name</option>
                       <option value="antennas">Antennas</option>
                     </select>
@@ -531,13 +531,14 @@ export default function Home() {
           {showProjectList && authEmail && (
             <div className="w-full max-w-7xl mx-auto mt-4 bg-white rounded-2xl shadow-xl">
               {(() => {
-                const filtered = projects
+                    const filtered = projects
                   .filter(p => !search || p.name.toLowerCase().includes(search.toLowerCase()))
                   .sort((a,b) => {
                     if (sortBy === 'name') return a.name.localeCompare(b.name);
                     if (sortBy === 'antennas') return b.antennaCount - a.antennaCount;
-                    if (sortBy === 'updated') return b.updatedAt.getTime() - a.updatedAt.getTime();
-                    const aT = a.lastOpenedAt?.getTime?.() || 0; const bT = b.lastOpenedAt?.getTime?.() || 0; return bT - aT;
+                        const aT = a.lastOpenedAt?.getTime?.() || a.updatedAt?.getTime?.() || a.createdAt?.getTime?.() || 0;
+                        const bT = b.lastOpenedAt?.getTime?.() || b.updatedAt?.getTime?.() || b.createdAt?.getTime?.() || 0;
+                        return bT - aT;
                   });
                 if (filtered.length === 0) {
                   return (
@@ -550,10 +551,14 @@ export default function Home() {
                   <ul className="divide-y divide-gray-200">
                     {filtered.map((project) => {
                   const selected = selectedProjectIds.has(project.id);
-                  const last = project.lastOpenedAt || project.updatedAt;
-                  const lastLabel = project.lastOpenedAt ? 'Last opened' : 'Updated';
+                  const last = project.lastOpenedAt || project.updatedAt || project.createdAt;
+                  const lastLabel = 'Last opened';
                   return (
-                    <li key={project.id} className={`group p-4 hover:bg-gray-50 cursor-pointer ${selected ? 'bg-blue-50' : ''}`} onClick={() => handleLoadProject(project.id)}>
+                    <li
+                      key={project.id}
+                      className={`group p-4 hover:bg-gray-50 cursor-pointer ${selected ? 'bg-blue-50' : ''}`}
+                      onClick={() => { if (!authEmail) return; handleLoadProject(project.id); }}
+                    >
                       <div className="flex items-start gap-3">
                         <div onClick={(e)=>e.stopPropagation()} className="pt-1">
                           <input
