@@ -9,7 +9,7 @@ import NameProjectModal from '@/components/NameProjectModal';
 import { ProjectService } from '@/services/projectService';
 import { CanvasState, ProjectSettings, ProjectSummary } from '@/types/project';
 import { captureCanvasThumbnail } from '@/utils/thumbnail';
-import { onAuthChange, signInWithGoogle, signOutUser, getCurrentUser } from '@/lib/firebaseAuth';
+import { onAuthChange, signInWithGoogle, signOutUser, getCurrentUser, ensureAnonymousAuth } from '@/lib/firebaseAuth';
 
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -87,15 +87,23 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    // initialize auth email and subscribe to changes
-    const u = getCurrentUser();
-    setAuthEmail(u?.email || null);
-    const unsub = onAuthChange(user => {
-      setAuthEmail(user?.email || null);
-      // refresh projects after sign-in/out
-      loadProjects();
-    });
-    return unsub;
+    // Initialize auth state AFTER Firebase restores session; then subscribe to changes
+    let unsub: (() => void) | undefined;
+    (async () => {
+      try {
+        await ensureAnonymousAuth();
+      } catch (e) {
+        console.warn('Auth init warning:', e);
+      }
+      const u = getCurrentUser();
+      setAuthEmail(u?.email || null);
+      unsub = onAuthChange(user => {
+        setAuthEmail(user?.email || null);
+        // refresh projects after sign-in/out
+        loadProjects();
+      });
+    })();
+    return () => { if (unsub) unsub(); };
   }, [loadProjects]);
 
   const toggleProjectSelection = useCallback((projectId: string) => {
