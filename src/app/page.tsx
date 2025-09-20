@@ -511,7 +511,13 @@ export default function Home() {
                   </>
                 ) : (
                   <button
-                    onClick={() => signInWithGoogle()}
+                    onClick={async () => {
+                      try {
+                        await signInWithGoogle();
+                      } catch (e: any) {
+                        alert(e?.message || 'Login failed. Please use your corporate Google account.');
+                      }
+                    }}
                     className="px-4 py-2 rounded-full bg-white text-[#16899A] hover:bg-blue-50 text-sm transition"
                   >
                     Login with Google
