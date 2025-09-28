@@ -26,12 +26,10 @@ const AntennaTest = () => {
   // Simple grid-based antenna placement
   const autoPlaceAntennas = () => {
     try {
-      setMessage('Running antenna placement algorithm...');
-      
-      // Test environment
-      const width = 800;
-      const height = 600;
-      const pixelsPerMeter = 10; // 10 pixels = 1 meter
+    setMessage('Running antenna placement algorithm...');
+
+    // Test environment
+    const pixelsPerMeter = 10; // 10 pixels = 1 meter
       
       // Create a simple room boundary (rectangle)
       const roomBoundary: Wall[] = [

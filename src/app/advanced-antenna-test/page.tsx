@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import EmergencyTestButton from '@/components/EmergencyTestButton';
 
 // Define types
@@ -31,23 +31,92 @@ const AdvancedAntennaTest = () => {
   const [showDebugPoints, setShowDebugPoints] = useState(true);
   const [debugPoints, setDebugPoints] = useState<Point[]>([]);
 
-  // Canvas dimensions
-  const canvasWidth = roomDimensions.width * pixelsPerMeter;
-  const canvasHeight = roomDimensions.height * pixelsPerMeter;
-  
   // Padding for the room inside the canvas
   const padding = 50;
   
-  // Calculate room coordinates with padding
-  const roomCoords = {
+  const roomCoords = useMemo(() => ({
     x1: padding,
     y1: padding,
     x2: padding + (roomDimensions.width * pixelsPerMeter),
     y2: padding + (roomDimensions.height * pixelsPerMeter)
-  };
+  }), [padding, roomDimensions.width, roomDimensions.height, pixelsPerMeter]);
+
+  const canvasWidth = roomDimensions.width * pixelsPerMeter;
+  const canvasHeight = roomDimensions.height * pixelsPerMeter;
 
   // Advanced antenna placement using a more sophisticated algorithm
-  const placeAntennas = () => {
+  const drawCanvas = useCallback((walls: Wall[], antennas: Antenna[], points: Point[]) => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvasWidth + (padding * 2);
+      canvas.height = canvasHeight + (padding * 2);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        setMessage('Error: Could not get canvas context');
+        return;
+      }
+
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = 'rgba(240, 240, 240, 0.5)';
+      ctx.fillRect(roomCoords.x1, roomCoords.y1, roomCoords.x2 - roomCoords.x1, roomCoords.y2 - roomCoords.y1);
+
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = 2;
+      walls.forEach(wall => {
+        ctx.beginPath();
+        ctx.moveTo(wall.x1, wall.y1);
+        ctx.lineTo(wall.x2, wall.y2);
+        ctx.stroke();
+      });
+
+      if (showDebugPoints) {
+        ctx.fillStyle = 'rgba(200, 0, 0, 0.3)';
+        points.forEach(point => {
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      antennas.forEach(antenna => {
+        ctx.fillStyle = 'rgba(0, 0, 255, 0.1)';
+        ctx.beginPath();
+        ctx.arc(antenna.x, antenna.y, antenna.range, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(0, 0, 255, 0.3)';
+        ctx.beginPath();
+        ctx.arc(antenna.x, antenna.y, antenna.range, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+
+      antennas.forEach(antenna => {
+        ctx.fillStyle = 'blue';
+        ctx.beginPath();
+        ctx.arc(antenna.x, antenna.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      ctx.fillStyle = 'black';
+      ctx.font = '12px Arial';
+      ctx.fillText(`Scale: ${pixelsPerMeter} pixels = 1 meter`, 10, 20);
+      ctx.fillText(`Room: ${roomDimensions.width}m × ${roomDimensions.height}m`, 10, 40);
+      ctx.fillText(`Antenna range: ${antennaRange}m`, 10, 60);
+
+      const canvasContainer = document.getElementById('advanced-antenna-test-canvas');
+      if (canvasContainer) {
+        canvasContainer.innerHTML = '';
+        canvasContainer.appendChild(canvas);
+      }
+    } catch (error: any) {
+      console.error('Drawing error:', error);
+      setMessage(`Error drawing canvas: ${error.message || 'Unknown error'}`);
+    }
+  }, [antennaRange, canvasHeight, canvasWidth, padding, pixelsPerMeter, roomCoords, roomDimensions.height, roomDimensions.width, setMessage, showDebugPoints]);
+
+  const placeAntennas = useCallback(() => {
     try {
       setMessage('Running advanced antenna placement algorithm...');
       setDebugPoints([]);
@@ -100,89 +169,7 @@ const AdvancedAntennaTest = () => {
       console.error('Advanced antenna placement error:', error);
       setMessage(`Error: ${error.message || 'Unknown error'}`);
     }
-  };
-  
-  // Draw the canvas with walls, antennas, and debug points
-  const drawCanvas = (walls: Wall[], antennas: Antenna[], points: Point[]) => {
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width = canvasWidth + (padding * 2);
-      canvas.height = canvasHeight + (padding * 2);
-      
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        setMessage('Error: Could not get canvas context');
-        return;
-      }
-      
-      // Clear canvas
-      ctx.fillStyle = 'white';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      
-      // Draw room
-      ctx.fillStyle = 'rgba(240, 240, 240, 0.5)';
-      ctx.fillRect(roomCoords.x1, roomCoords.y1, roomCoords.x2 - roomCoords.x1, roomCoords.y2 - roomCoords.y1);
-      
-      // Draw walls
-      ctx.strokeStyle = 'black';
-      ctx.lineWidth = 2;
-      walls.forEach(wall => {
-        ctx.beginPath();
-        ctx.moveTo(wall.x1, wall.y1);
-        ctx.lineTo(wall.x2, wall.y2);
-        ctx.stroke();
-      });
-      
-      // Draw debug points if enabled
-      if (showDebugPoints) {
-        ctx.fillStyle = 'rgba(200, 0, 0, 0.3)';
-        points.forEach(point => {
-          ctx.beginPath();
-          ctx.arc(point.x, point.y, 3, 0, Math.PI * 2);
-          ctx.fill();
-        });
-      }
-      
-      // Draw antenna coverage areas
-      antennas.forEach(antenna => {
-        // Draw coverage area
-        ctx.fillStyle = 'rgba(0, 0, 255, 0.1)';
-        ctx.beginPath();
-        ctx.arc(antenna.x, antenna.y, antenna.range, 0, Math.PI * 2);
-        ctx.fill();
-        
-        ctx.strokeStyle = 'rgba(0, 0, 255, 0.3)';
-        ctx.beginPath();
-        ctx.arc(antenna.x, antenna.y, antenna.range, 0, Math.PI * 2);
-        ctx.stroke();
-      });
-      
-      // Draw antenna points
-      antennas.forEach(antenna => {
-        ctx.fillStyle = 'blue';
-        ctx.beginPath();
-        ctx.arc(antenna.x, antenna.y, 5, 0, Math.PI * 2);
-        ctx.fill();
-      });
-      
-      // Add scale indicator
-      ctx.fillStyle = 'black';
-      ctx.font = '12px Arial';
-      ctx.fillText(`Scale: ${pixelsPerMeter} pixels = 1 meter`, 10, 20);
-      ctx.fillText(`Room: ${roomDimensions.width}m × ${roomDimensions.height}m`, 10, 40);
-      ctx.fillText(`Antenna range: ${antennaRange}m`, 10, 60);
-      
-      // Insert the canvas into the DOM
-      const canvasContainer = document.getElementById('advanced-antenna-test-canvas');
-      if (canvasContainer) {
-        canvasContainer.innerHTML = '';
-        canvasContainer.appendChild(canvas);
-      }
-    } catch (error: any) {
-      console.error('Drawing error:', error);
-      setMessage(`Error drawing canvas: ${error.message || 'Unknown error'}`);
-    }
-  };
+  }, [antennaRange, drawCanvas, pixelsPerMeter, roomCoords, setAntennas, setDebugPoints, setMessage]);
   
   // Initialize canvas on mount
   useEffect(() => {
@@ -193,7 +180,7 @@ const AdvancedAntennaTest = () => {
       { x1: roomCoords.x1, y1: roomCoords.y2, x2: roomCoords.x1, y2: roomCoords.y1 }  // left
     ];
     drawCanvas(walls, [], []);
-  }, [roomDimensions, pixelsPerMeter]);
+  }, [drawCanvas, roomCoords]);
 
   return (
     <div className="p-4">

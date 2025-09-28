@@ -33,6 +33,7 @@ export type CanvasState = {
   antennas?: Antenna[];
   areas?: Area[];
   scale?: number | null;
+  scaleUnit?: Units;
   showCoverage?: boolean;
   showRadiusBoundary?: boolean;
   antennaRange?: number;
@@ -95,6 +96,19 @@ export type ProjectSettings = {
   showRadiusBoundary?: boolean;
 };
 
+export type FloorAreaSummary = {
+  id: string;
+  label: string;
+  area: number;
+};
+
+export type FloorStatistics = {
+  antennaCount: number;
+  areaCount: number;
+  totalArea: number;
+  areaSummaries: FloorAreaSummary[];
+};
+
 export type SaveProjectRequest = {
   name: string;
   description?: string;
@@ -112,6 +126,8 @@ export type ProjectData = {
   updatedAt: Date;
   lastOpenedAt?: Date;
   version: number;
+  // Optional: number of floors in subcollection (for multi-floor projects)
+  floorCount?: number;
   metadata: {
     originalFileName?: string;
     fileSize?: number;
@@ -135,4 +151,67 @@ export type ProjectSummary = {
   thumbnailUrl?: string;
   antennaCount: number;
   areaCount: number;
+  floorCount?: number;
+};
+
+// ===== Multi-floor types (subcollection under projects/{pid}/floors/{fid}) =====
+
+export type SaveFloorRequest = {
+  name?: string;
+  canvasState: CanvasState;
+  imageFile?: File;
+  thumbnailBlob?: Blob;
+};
+
+export type FloorData = {
+  id: string;
+  projectId: string;
+  name: string;
+  orderIndex: number;
+  createdAt: Date;
+  updatedAt: Date;
+  metadata: {
+    originalFileName?: string;
+    fileSize?: number;
+    imageUrl: string;
+    storagePath?: string;
+    imageWidth?: number;
+    imageHeight?: number;
+    thumbnailUrl?: string;
+  };
+  canvasState: CanvasState;
+  stats?: FloorStatistics;
+  units?: Units;
+};
+
+export type FloorSummary = {
+  id: string;
+  name: string;
+  orderIndex: number;
+  updatedAt: Date;
+  thumbnailUrl?: string;
+  antennaCount: number;
+  areaCount: number;
+  totalArea: number;
+  units?: Units;
+  areaSummaries?: FloorAreaSummary[];
+};
+
+export type FloorEntry = {
+  id: string;
+  name: string;
+  orderIndex: number;
+  createdAt: Date;
+  updatedAt: Date;
+  thumbnailUrl?: string;
+  imageUrl?: string;
+  imageFile?: File;
+  canvasState: CanvasState;
+  stats: FloorStatistics;
+  units: Units;
+  scale: number | null;
+  dirty: boolean;
+  persisted: boolean;
+  loaded: boolean;
+  stateHash?: string;
 };

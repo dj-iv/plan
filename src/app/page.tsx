@@ -1,14 +1,18 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import Image from 'next/image';
 import FileUpload from '@/components/FileUpload';
+import FloorUpload from '@/components/FloorUpload';
 import ScaleControl from '@/components/ScaleControl';
 import FloorplanCanvas from '@/components/FloorplanCanvas';
 import NameProjectModal from '@/components/NameProjectModal';
 import { ProjectService } from '@/services/projectService';
-import { CanvasState, ProjectSettings, ProjectSummary } from '@/types/project';
+import { FloorService } from '@/services/floorService';
+import { CanvasState, ProjectSummary, FloorSummary, FloorData, FloorEntry, Units } from '@/types/project';
 import { captureCanvasThumbnail } from '@/utils/thumbnail';
+import { computeFloorStatistics, normaliseUnit } from '@/utils/floorStats';
 import { onAuthChange, signInWithGoogle, signOutUser, getCurrentUser, ensureAnonymousAuth } from '@/lib/firebaseAuth';
 
 export default function Home() {
@@ -36,6 +40,98 @@ export default function Home() {
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
   const [logoPxWidth, setLogoPxWidth] = useState<number | null>(null);
+  const [logoSource, setLogoSource] = useState<string>('/uctel-logo.svg');
+  const [showLogo, setShowLogo] = useState<boolean>(true);
+  
+  // Multi-floor state
+  const [floors, setFloors] = useState<FloorEntry[]>([]);
+  const [currentFloorId, setCurrentFloorId] = useState<string | null>(null);
+  const [floorsLoading, setFloorsLoading] = useState<boolean>(false);
+  const [showFloorUpload, setShowFloorUpload] = useState<boolean>(false);
+  const [floorUploadTargetProjectId, setFloorUploadTargetProjectId] = useState<string | null>(null);
+  const [canvasInstanceKey, setCanvasInstanceKey] = useState<number>(0);
+
+  const floorStateHashesRef = useRef<Map<string, string>>(new Map());
+
+  const handleLogoLoadError = useCallback(() => {
+    setLogoSource(prev => {
+      if (prev === '/uctel-logo.svg') {
+        console.warn('UCtel SVG logo missing, falling back to PNG');
+        return '/uctel-logo.png';
+      }
+      setShowLogo(false);
+      console.warn('UCtel logo missing');
+      return prev;
+    });
+  }, [setShowLogo, setLogoSource]);
+
+  const computeStateHash = useCallback((state: CanvasState | null): string => {
+    if (!state) return '';
+    try {
+      const payload = JSON.stringify(state);
+      let h = 0;
+      for (let i = 0; i < payload.length; i++) {
+        h = (h * 31 + payload.charCodeAt(i)) | 0;
+      }
+      return String(h);
+    } catch {
+      return String(Date.now());
+    }
+  }, []);
+
+  const toFloorEntry = useCallback((floor: FloorData): FloorEntry => {
+    const canvasState = floor.canvasState || ({} as CanvasState);
+    const statsUnits = floor.stats && floor.units
+      ? { stats: floor.stats, units: floor.units }
+      : computeFloorStatistics(canvasState);
+    const stateHash = computeStateHash(canvasState);
+    floorStateHashesRef.current.set(floor.id, stateHash);
+    return {
+      id: floor.id,
+      name: floor.name,
+      orderIndex: floor.orderIndex ?? 0,
+      createdAt: floor.createdAt,
+      updatedAt: floor.updatedAt,
+      thumbnailUrl: floor.metadata?.thumbnailUrl,
+      imageUrl: floor.metadata?.imageUrl,
+      imageFile: undefined,
+      canvasState,
+      stats: statsUnits.stats,
+      units: statsUnits.units,
+      scale: typeof canvasState.scale === 'number' ? canvasState.scale : null,
+      dirty: false,
+      persisted: true,
+      loaded: true,
+      stateHash,
+    };
+  }, [computeStateHash]);
+
+  const updateFloorEntry = useCallback((floorId: string, updater: (entry: FloorEntry) => FloorEntry) => {
+    setFloors(prev => prev.map(entry => (entry.id === floorId ? updater(entry) : entry)));
+  }, []);
+
+  const previousFloorIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (currentFloorId && previousFloorIdRef.current !== currentFloorId) {
+      setCanvasInstanceKey(key => key + 1);
+    }
+    previousFloorIdRef.current = currentFloorId;
+  }, [currentFloorId]);
+
+  const floorSummaries = useMemo<FloorSummary[]>(() =>
+    floors.map(entry => ({
+      id: entry.id,
+      name: entry.name,
+      orderIndex: entry.orderIndex,
+      updatedAt: entry.updatedAt,
+      thumbnailUrl: entry.thumbnailUrl,
+      antennaCount: entry.stats.antennaCount,
+      areaCount: entry.stats.areaCount,
+      totalArea: entry.stats.totalArea,
+      units: entry.units,
+      areaSummaries: entry.stats.areaSummaries,
+    })),
+  [floors]);
   // persist search/sort
   useEffect(() => {
     try {
@@ -52,17 +148,62 @@ export default function Home() {
     try { localStorage.setItem('projects.sortBy', sortBy); } catch {}
   }, [sortBy]);
 
-  const handleFileUpload = useCallback((file: File, previewUrl?: string) => {
-    setUploadedFile(file);
-    setImageUrl(previewUrl || (file ? URL.createObjectURL(file) : ''));
-    // New upload starts a new project draft
+  const handleInitialFloorUpload = useCallback((uploadedFloors: Array<{ file: File; previewUrl?: string; name: string }>) => {
+    if (uploadedFloors.length === 0) {
+      return;
+    }
+
+  floorStateHashesRef.current.clear();
+
+  const now = new Date();
+    const additions: FloorEntry[] = uploadedFloors.map((item, index) => {
+      const floorId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `local-${Date.now()}-${index}`;
+      const isDataUrlPreview = !!item.previewUrl && item.previewUrl.startsWith('data:');
+      const preview = isDataUrlPreview ? item.previewUrl : URL.createObjectURL(item.file);
+      const blankState = {} as CanvasState;
+      const stateHash = computeStateHash(blankState);
+      floorStateHashesRef.current.set(floorId, stateHash);
+      return {
+        id: floorId,
+        name: item.name || `Floor ${index + 1}`,
+        orderIndex: index,
+        createdAt: now,
+        updatedAt: now,
+        thumbnailUrl: isDataUrlPreview ? item.previewUrl : preview,
+        imageUrl: preview,
+        imageFile: item.file,
+        canvasState: blankState,
+        stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [] },
+        units: normaliseUnit(unit as Units),
+        scale: null,
+        dirty: true,
+        persisted: false,
+        loaded: false,
+        stateHash,
+      };
+    });
+
+    setFloors(additions);
+
+    const first = additions[0];
+    setCurrentFloorId(first.id);
+    setUploadedFile(first.imageFile || null);
+    setImageUrl(first.imageUrl || '');
+    setLoadedCanvasState(null);
+    canvasStateRef.current = null;
+
     setCurrentProjectId(null);
     setCurrentProjectName(null);
-    // Automatically switch to canvas view
+    setScale(null);
+    setInfoMessage(additions.length === 1 ? '1 floor staged for analysis' : `${additions.length} floors staged for analysis`);
+    setTimeout(() => setInfoMessage(null), 3000);
+
     setTimeout(() => {
       setShowCanvas(true);
-    }, 500); // Small delay for smooth transition
-  }, []);
+    }, 250);
+  }, [computeStateHash, unit]);
 
   const handleReset = useCallback(() => {
     setUploadedFile(null);
@@ -75,6 +216,12 @@ export default function Home() {
     setCurrentProjectId(null);
     setCurrentProjectName(null);
     setIsDirty(false);
+    // Reset floor-related state
+    setFloors([]);
+    setCurrentFloorId(null);
+    setShowFloorUpload(false);
+    floorStateHashesRef.current.clear();
+    setCanvasInstanceKey(0);
   }, []);
 
   const loadProjects = useCallback(async () => {
@@ -162,23 +309,314 @@ export default function Home() {
     setSelectedProjectIds(new Set());
   }, []);
 
-  
-
-  // Hash canvas state for dirtiness detection
-  const computeStateHash = useCallback((state: CanvasState | null): string => {
-    if (!state) return '';
-    try {
-      // cheap stable-ish hash: JSON of selected fields
-      const payload = JSON.stringify(state);
-      let h = 0;
-      for (let i = 0; i < payload.length; i++) {
-        h = (h * 31 + payload.charCodeAt(i)) | 0;
-      }
-      return String(h);
-    } catch {
-      return String(Date.now());
+  // Floor management functions
+  const loadFloors = useCallback(async (projectId: string) => {
+    if (!projectId) {
+      setFloors([]);
+      return;
     }
+    try {
+      setFloorsLoading(true);
+      floorStateHashesRef.current.clear();
+      const summaries = await FloorService.listFloors(projectId);
+      const entries: FloorEntry[] = [];
+      for (const summary of summaries) {
+        try {
+          const data = await FloorService.getFloor(projectId, summary.id);
+          if (data) {
+            entries.push(toFloorEntry(data));
+          }
+        } catch (err) {
+          console.warn('Failed to load floor', summary.id, err);
+        }
+      }
+      entries.sort((a, b) => a.orderIndex - b.orderIndex);
+      setFloors(entries);
+
+      if (!currentFloorId && entries.length > 0) {
+        setCurrentFloorId(entries[0].id);
+      }
+    } catch (e) {
+      console.error('Failed to load floors', e);
+      setFloors([]);
+    } finally {
+      setFloorsLoading(false);
+    }
+  }, [currentFloorId, toFloorEntry]);
+
+  const handleSelectFloor = useCallback(async (floorId: string) => {
+    if (floorId === currentFloorId) {
+      return;
+    }
+
+    let entry = floors.find(f => f.id === floorId);
+    if (!entry) return;
+
+    if (!entry.loaded && currentProjectId) {
+      try {
+        const floorData = await FloorService.getFloor(currentProjectId, floorId);
+        if (floorData) {
+          entry = toFloorEntry(floorData);
+          setFloors(prev => prev.map(f => (f.id === floorId ? entry! : f)));
+        }
+      } catch (e) {
+        console.error('Failed to load floor data', e);
+      }
+    }
+
+    const resolvedImageUrl = entry.imageUrl
+      || (entry.imageFile ? URL.createObjectURL(entry.imageFile) : imageUrl);
+
+    setCurrentFloorId(entry.id);
+    setScale(typeof entry.scale === 'number' ? entry.scale : null);
+    setUnit(entry.units || 'meters');
+    setImageUrl(resolvedImageUrl || '');
+    setLoadedCanvasState(entry.canvasState);
+    canvasStateRef.current = entry.canvasState;
+
+    setShowCanvas(true);
+  }, [currentFloorId, floors, currentProjectId, toFloorEntry, imageUrl]);
+
+  const handleAddFloor = useCallback(async () => {
+    setFloorUploadTargetProjectId(currentProjectId ?? null);
+    setShowFloorUpload(true);
+  }, [currentProjectId]);
+
+  const handleFloorUpload = useCallback(async (uploadedFloors: Array<{ file: File; previewUrl?: string; name: string }>) => {
+    const targetProjectId = floorUploadTargetProjectId;
+    setShowFloorUpload(false);
+    setFloorUploadTargetProjectId(null);
+
+    const effectiveProjectId = targetProjectId ?? currentProjectId;
+
+    const now = new Date();
+
+    if (!effectiveProjectId) {
+      const highestOrder = floors.reduce((max, entry) => (
+        typeof entry.orderIndex === 'number' ? Math.max(max, entry.orderIndex) : max
+      ), -1);
+      const nextOrderStart = highestOrder + 1;
+
+      const additions: FloorEntry[] = uploadedFloors.map((item, index) => {
+        const localId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `local-${Date.now()}-${index}`;
+        const preview = item.previewUrl || URL.createObjectURL(item.file);
+        const blankState = {} as CanvasState;
+        const stateHash = computeStateHash(blankState);
+        floorStateHashesRef.current.set(localId, stateHash);
+        return {
+          id: localId,
+          name: item.name,
+          orderIndex: nextOrderStart + index,
+          createdAt: now,
+          updatedAt: now,
+          thumbnailUrl: item.previewUrl,
+          imageUrl: preview,
+          imageFile: item.file,
+          canvasState: blankState,
+          stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [] },
+          units: normaliseUnit(unit as Units),
+          scale: null,
+          dirty: true,
+          persisted: false,
+          loaded: false,
+          stateHash,
+        };
+      });
+
+      setFloors(prev => [...prev, ...additions]);
+
+      if (!currentFloorId && additions.length > 0) {
+        const first = additions[0];
+        setCurrentFloorId(first.id);
+        setImageUrl(first.imageUrl || '');
+        setUploadedFile(first.imageFile || null);
+        setShowCanvas(true);
+      }
+
+      const floorWord = additions.length === 1 ? 'floor added locally' : 'floors added locally';
+      setInfoMessage(`${additions.length} ${floorWord}`);
+      setTimeout(() => setInfoMessage(null), 2500);
+      return;
+    }
+
+    if (effectiveProjectId !== currentProjectId) {
+      try {
+        setIsLoading(true);
+        let nextOrderStart = -1;
+        try {
+          const existingFloors = await FloorService.listFloors(effectiveProjectId);
+          nextOrderStart = existingFloors.reduce((max, summary) => (
+            typeof summary.orderIndex === 'number' ? Math.max(max, summary.orderIndex) : max
+          ), -1) + 1;
+        } catch (err) {
+          console.warn('Could not load existing floors for project', effectiveProjectId, err);
+          nextOrderStart = 0;
+        }
+
+        for (let i = 0; i < uploadedFloors.length; i++) {
+          const { file, previewUrl, name } = uploadedFloors[i];
+          let thumbnailBlob: Blob | undefined;
+          if (previewUrl) {
+            try {
+              const response = await fetch(previewUrl);
+              thumbnailBlob = await response.blob();
+            } catch (err) {
+              console.warn('Failed to generate thumbnail blob', err);
+            }
+          }
+
+          await FloorService.addFloor(effectiveProjectId, {
+            name,
+            canvasState: {} as CanvasState,
+            imageFile: file,
+            thumbnailBlob,
+          }, nextOrderStart + i);
+        }
+
+        const floorWord = uploadedFloors.length === 1 ? 'floor' : 'floors';
+        setInfoMessage(`${uploadedFloors.length} ${floorWord} added to project`);
+        setTimeout(() => setInfoMessage(null), 2500);
+        await loadProjects();
+      } catch (e) {
+        console.error('Failed to add floors to project', e);
+        alert('Failed to add floors to selected project.');
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    try {
+      setFloorsLoading(true);
+      const highestOrder = floors.reduce((max, entry) => (
+        typeof entry.orderIndex === 'number' ? Math.max(max, entry.orderIndex) : max
+      ), -1);
+      const nextOrderStart = highestOrder + 1;
+      const hadExistingFloors = floors.length > 0;
+      for (let i = 0; i < uploadedFloors.length; i++) {
+        const { file, previewUrl, name } = uploadedFloors[i];
+        let thumbnailBlob: Blob | undefined;
+        if (previewUrl) {
+          try {
+            const response = await fetch(previewUrl);
+            thumbnailBlob = await response.blob();
+          } catch (err) {
+            console.warn('Failed to generate thumbnail blob', err);
+          }
+        }
+
+        const newFloorId = await FloorService.addFloor(effectiveProjectId, {
+          name,
+          canvasState: {} as CanvasState,
+          imageFile: file,
+          thumbnailBlob,
+        }, nextOrderStart + i);
+
+        const floorData = await FloorService.getFloor(effectiveProjectId, newFloorId);
+        if (floorData) {
+          setFloors(prev => {
+            const updated = [...prev, toFloorEntry(floorData)];
+            return updated.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+          });
+        }
+
+        if (!hadExistingFloors && i === 0) {
+          const preview = previewUrl || URL.createObjectURL(file);
+          setCurrentFloorId(newFloorId);
+          setImageUrl(preview);
+          setUploadedFile(file);
+          setLoadedCanvasState(null);
+          canvasStateRef.current = null;
+          setScale(null);
+          setShowCanvas(true);
+        }
+      }
+
+      const floorWord = uploadedFloors.length === 1 ? 'floor' : 'floors';
+      setInfoMessage(`${uploadedFloors.length} ${floorWord} added successfully`);
+      setTimeout(() => setInfoMessage(null), 2500);
+    } catch (e) {
+      console.error('Failed to add floors', e);
+      alert('Failed to add floors.');
+    } finally {
+      setFloorsLoading(false);
+    }
+  }, [currentProjectId, currentFloorId, floors, floorUploadTargetProjectId, toFloorEntry, unit, computeStateHash, loadProjects]);
+
+  const handleCancelFloorUpload = useCallback(() => {
+    setShowFloorUpload(false);
+    setFloorUploadTargetProjectId(null);
   }, []);
+
+  const handleRenameFloor = useCallback(async (floorId: string, name: string) => {
+    if (!currentProjectId) {
+      // For unsaved projects, just update local state
+      updateFloorEntry(floorId, floor => ({
+        ...floor,
+        name,
+        dirty: true,
+        updatedAt: new Date(),
+      }));
+      setInfoMessage(`Floor renamed to "${name}"`);
+      setTimeout(() => setInfoMessage(null), 2000);
+      return;
+    }
+    
+    try {
+      await FloorService.renameFloor(currentProjectId, floorId, name);
+      await loadFloors(currentProjectId);
+      setInfoMessage(`Floor renamed to "${name}"`);
+      setTimeout(() => setInfoMessage(null), 2000);
+    } catch (e) {
+      console.error('Failed to rename floor', e);
+      alert('Failed to rename floor.');
+    }
+  }, [currentProjectId, loadFloors, updateFloorEntry]);
+
+  const handleDeleteFloor = useCallback(async (floorId: string) => {
+    if (!currentProjectId) {
+      setFloors(prev => prev.filter(f => f.id !== floorId));
+      floorStateHashesRef.current.delete(floorId);
+      if (floorId === currentFloorId) {
+        const remaining = floors.filter(f => f.id !== floorId);
+        if (remaining.length > 0) {
+          setCurrentFloorId(remaining[0].id);
+          setLoadedCanvasState(remaining[0].canvasState);
+          setScale(remaining[0].scale ?? null);
+          setUnit(remaining[0].units ?? 'meters');
+          setImageUrl(remaining[0].imageUrl || '');
+        } else {
+          handleReset();
+        }
+      }
+      return;
+    }
+
+    try {
+      await FloorService.deleteFloor(currentProjectId, floorId);
+
+      const remainingFloors = floors.filter(f => f.id !== floorId);
+      setFloors(remainingFloors);
+      floorStateHashesRef.current.delete(floorId);
+
+      if (floorId === currentFloorId) {
+        if (remainingFloors.length > 0) {
+          await handleSelectFloor(remainingFloors[0].id);
+        } else {
+          handleReset();
+          return;
+        }
+      }
+
+      setInfoMessage('Floor deleted');
+      setTimeout(() => setInfoMessage(null), 2000);
+    } catch (e) {
+      console.error('Failed to delete floor', e);
+      alert('Failed to delete floor.');
+    }
+  }, [currentProjectId, currentFloorId, floors, handleSelectFloor, handleReset]);
 
   const lastSavedHashRef = useRef<string>('');
 
@@ -187,44 +625,91 @@ export default function Home() {
   }, [showNameModal]);
 
   const handleSaveProject = useCallback(async (overrideName?: string) => {
-    console.log('[Save] handler invoked');
-    // If we don't have a project yet, ask for a name via modal (single path)
-    let nameToUse = (overrideName ?? currentProjectName)?.trim() || null;
-    if (!currentProjectId) {
-      if (!nameToUse) {
-        console.log('[Save] no currentProjectId and no name → opening name modal');
-        setShowNameModal(true);
-        setInfoMessage('Name your project to save');
-        setTimeout(() => setInfoMessage(null), 2000);
-        return; // Wait for modal confirm
-      }
-      if (!canvasStateRef.current) {
-        console.log('[Save] aborted: no canvasStateRef.current');
-        alert('Nothing to save yet.');
-        return;
-      }
+    if (isSaving) {
+      console.log('[Save] already saving, skipping');
+      return;
+    }
+
+    const trimmedName = overrideName?.trim?.() || currentProjectName?.trim?.() || '';
+    if (!currentProjectId && !trimmedName) {
+      setShowNameModal(true);
+      setInfoMessage('Name your project to save');
+      setTimeout(() => setInfoMessage(null), 2000);
+      return;
+    }
+
+    if (floors.length === 0) {
+      alert('Please add at least one floor before saving.');
+      return;
+    }
+
+    const projectName = trimmedName || currentProjectName || floors[0]?.name || 'Untitled Project';
+    const unitSetting = normaliseUnit(unit as Units);
+
+    const latestCanvasState = canvasStateRef.current;
+    const captureThumbnail = async (entry: FloorEntry): Promise<Blob | undefined> => {
+      if (entry.id !== currentFloorId) return undefined;
       try {
-        setIsSaving(true);
-        let thumbnailBlob: Blob | undefined = undefined;
-        try {
-          const canvasEl = document.querySelector('canvas[data-main-canvas="1"]') as HTMLCanvasElement | null;
-          if (canvasEl) {
-            const blob = await captureCanvasThumbnail(canvasEl, 320, 0.85);
-            if (blob) thumbnailBlob = blob;
-          }
-        } catch {}
-        const savedId = await ProjectService.saveProject({
-          name: nameToUse,
+        const canvasEl = document.querySelector('canvas[data-main-canvas="1"]') as HTMLCanvasElement | null;
+        if (canvasEl) {
+          const blob = await captureCanvasThumbnail(canvasEl, 320, 0.85);
+          return blob ?? undefined;
+        }
+      } catch (err) {
+        console.warn('Thumbnail capture failed', err);
+      }
+      return undefined;
+    };
+
+    if (!currentProjectId) {
+      setIsSaving(true);
+      try {
+        const savedProjectId = await ProjectService.saveProject({
+          name: projectName,
           description: '',
-          canvasState: canvasStateRef.current,
-          settings: { units: (unit as any) || 'meters', showRadiusBoundary: true },
-          ...(uploadedFile ? { imageFile: uploadedFile } : {}),
-          ...(thumbnailBlob ? { thumbnailBlob } : {}),
-        }, undefined);
-        setCurrentProjectId(savedId);
-        lastSavedHashRef.current = computeStateHash(canvasStateRef.current);
+          canvasState: {},
+          settings: { units: unitSetting, showRadiusBoundary: true },
+        });
+        setCurrentProjectId(savedProjectId);
+        setCurrentProjectName(projectName);
+
+        const newEntries: FloorEntry[] = [];
+        const idMap: Record<string, string> = {};
+        for (let i = 0; i < floors.length; i++) {
+          const entry = floors[i];
+          const thumbnailBlob = await captureThumbnail(entry);
+          const payload = {
+            name: entry.name,
+            canvasState: entry.canvasState || ({} as CanvasState),
+            ...(entry.imageFile ? { imageFile: entry.imageFile } : {}),
+            ...(thumbnailBlob ? { thumbnailBlob } : {}),
+          };
+          const entryHash = computeStateHash(entry.canvasState || ({} as CanvasState));
+          const newFloorId = await FloorService.addFloor(savedProjectId, payload, i);
+          idMap[entry.id] = newFloorId;
+          floorStateHashesRef.current.set(newFloorId, entryHash);
+          newEntries.push({
+            ...entry,
+            id: newFloorId,
+            persisted: true,
+            dirty: false,
+            updatedAt: new Date(),
+            loaded: true,
+            stateHash: entryHash,
+          });
+        }
+        setFloors(newEntries);
+        if (latestCanvasState) {
+          setLoadedCanvasState(latestCanvasState);
+        }
+        if (currentFloorId && idMap[currentFloorId]) {
+          setCurrentFloorId(idMap[currentFloorId]);
+        }
+
+        const savedHash = computeStateHash(latestCanvasState);
+        lastSavedHashRef.current = savedHash;
         setIsDirty(false);
-        setInfoMessage(`Project "${nameToUse}" saved`);
+        setInfoMessage(`Project "${projectName}" saved`);
         setTimeout(() => setInfoMessage(null), 2500);
         setJustSaved(true);
         setTimeout(() => setJustSaved(false), 1500);
@@ -237,49 +722,83 @@ export default function Home() {
       }
       return;
     }
-    if (!canvasStateRef.current) {
-      console.log('[Save] aborted: no canvasStateRef.current');
-      alert('Nothing to save yet.');
-      return;
-    }
 
+    setIsSaving(true);
     try {
-      setIsSaving(true);
-      console.log('[Save] updating existing project', { id: currentProjectId });
-      let thumbnailBlob: Blob | undefined = undefined;
-      try {
-        const canvasEl = document.querySelector('canvas[data-main-canvas="1"]') as HTMLCanvasElement | null;
-        if (canvasEl) {
-          const blob = await captureCanvasThumbnail(canvasEl, 320, 0.85);
-          if (blob) thumbnailBlob = blob;
-        }
-      } catch {}
-      const savedId = await ProjectService.saveProject({
-        name: (nameToUse || 'Untitled Project'),
+      await ProjectService.saveProject({
+        name: projectName,
         description: '',
-        canvasState: canvasStateRef.current,
-        settings: { units: (unit as any) || 'meters', showRadiusBoundary: true },
-        ...(uploadedFile ? { imageFile: uploadedFile } : {}),
-        ...(thumbnailBlob ? { thumbnailBlob } : {}),
-      }, currentProjectId || undefined);
-  if (!currentProjectId) setCurrentProjectId(savedId);
-  // record last saved state hash
-  lastSavedHashRef.current = computeStateHash(canvasStateRef.current);
-  setIsDirty(false);
-  console.log('[Save] update complete');
-  setInfoMessage(`Project "${nameToUse}" saved`);
+        canvasState: {},
+        settings: { units: unitSetting, showRadiusBoundary: true },
+      }, currentProjectId);
+
+      const updatedEntries: FloorEntry[] = [];
+      const idMap: Record<string, string> = {};
+
+      for (let i = 0; i < floors.length; i++) {
+        const entry = floors[i];
+        const thumbnailBlob = await captureThumbnail(entry);
+        const payload = {
+          name: entry.name,
+          canvasState: entry.canvasState || ({} as CanvasState),
+          ...(entry.imageFile ? { imageFile: entry.imageFile } : {}),
+          ...(thumbnailBlob ? { thumbnailBlob } : {}),
+        };
+        const entryHash = computeStateHash(entry.canvasState || ({} as CanvasState));
+
+        if (entry.persisted) {
+          await FloorService.saveFloor(currentProjectId, entry.id, payload);
+          floorStateHashesRef.current.set(entry.id, entryHash);
+          updatedEntries.push({
+            ...entry,
+            dirty: false,
+            updatedAt: new Date(),
+            loaded: true,
+            stateHash: entryHash,
+          });
+        } else {
+          const newFloorId = await FloorService.addFloor(currentProjectId, payload, i);
+          idMap[entry.id] = newFloorId;
+          floorStateHashesRef.current.set(newFloorId, entryHash);
+          updatedEntries.push({
+            ...entry,
+            id: newFloorId,
+            persisted: true,
+            dirty: false,
+            updatedAt: new Date(),
+            loaded: true,
+            stateHash: entryHash,
+          });
+        }
+      }
+
+      setFloors(updatedEntries);
+      if (latestCanvasState) {
+        setLoadedCanvasState(latestCanvasState);
+      }
+      if (currentFloorId && idMap[currentFloorId]) {
+        setCurrentFloorId(idMap[currentFloorId]);
+      }
+
+      const savedHash = computeStateHash(latestCanvasState);
+      lastSavedHashRef.current = savedHash;
+      setIsDirty(false);
+      setInfoMessage(`Project "${projectName}" saved`);
       setTimeout(() => setInfoMessage(null), 2500);
       setJustSaved(true);
       setTimeout(() => setJustSaved(false), 1500);
-      // Refresh project list
       loadProjects();
+      await loadFloors(currentProjectId);
+      if (latestCanvasState) {
+        setLoadedCanvasState(latestCanvasState);
+      }
     } catch (e) {
       console.error('Save failed', e);
       alert('Failed to save project.');
     } finally {
       setIsSaving(false);
     }
-  }, [uploadedFile, unit, currentProjectId, currentProjectName, loadProjects, computeStateHash]);
+  }, [isSaving, currentProjectId, currentProjectName, floors, currentFloorId, unit, computeStateHash, loadProjects, loadFloors]);
 
   const handleLoadProject = useCallback(async (projectId: string) => {
     const currentEmail = getCurrentUser()?.email || authEmail;
@@ -295,31 +814,74 @@ export default function Home() {
         return;
       }
 
+      // Load floors for this project
+      await loadFloors(projectId);
+      
       // Load project data into state
       setUploadedFile(null); // We don't have the original file, just the image URL
       console.log('Loading project image URL:', projectData.metadata.imageUrl);
       
-      // Ensure we have a valid image URL before proceeding
-      if (!projectData.metadata.imageUrl) {
-        alert('Project has no associated image');
-        return;
+      // Check if project has floors
+      const floorsList = await FloorService.listFloors(projectId);
+      
+      if (floorsList.length > 0) {
+        // Multi-floor project: load the first floor with an image
+        let floorToLoad = floorsList[0]; // Default to first floor
+        let floorData = await FloorService.getFloor(projectId, floorToLoad.id);
+        
+        // If first floor has no image, try to find any floor with an image
+        if (!floorData || !floorData.metadata.imageUrl) {
+          for (const floor of floorsList) {
+            const tempFloorData = await FloorService.getFloor(projectId, floor.id);
+            if (tempFloorData && tempFloorData.metadata.imageUrl) {
+              floorToLoad = floor;
+              floorData = tempFloorData;
+              break;
+            }
+          }
+        }
+        
+        if (floorData && floorData.metadata.imageUrl) {
+          setImageUrl(floorData.metadata.imageUrl);
+          setLoadedCanvasState(floorData.canvasState);
+          canvasStateRef.current = floorData.canvasState;
+          setCurrentFloorId(floorToLoad.id);
+          
+          // Load scale from floor's canvas state or default
+          if (typeof floorData.canvasState.scale === 'number') {
+            setScale(floorData.canvasState.scale);
+          } else {
+            setScale(null);
+          }
+        } else {
+          alert('Project has no floors with associated images');
+          return;
+        }
+      } else {
+        // Single-floor (legacy) project: load directly from project
+        if (!projectData.metadata.imageUrl) {
+          alert('Project has no associated image');
+          return;
+        }
+        
+        setImageUrl(projectData.metadata.imageUrl);
+        setLoadedCanvasState(projectData.canvasState);
+        canvasStateRef.current = projectData.canvasState;
+        
+        // Always set scale from loaded project, even if null
+        if (typeof projectData.canvasState.scale === 'number') {
+          setScale(projectData.canvasState.scale);
+        } else {
+          setScale(null);
+        }
       }
       
-      setImageUrl(projectData.metadata.imageUrl);
-      // Always set scale from loaded project, even if null
-      if (typeof projectData.canvasState.scale === 'number') {
-        setScale(projectData.canvasState.scale);
-      } else {
-        setScale(null);
-      }
       setUnit(projectData.settings.units || 'meters');
-      setLoadedCanvasState(projectData.canvasState); // Set the loaded state for restoration
-      canvasStateRef.current = projectData.canvasState;
-  setCurrentProjectId(projectData.id);
-  setCurrentProjectName(projectData.name);
-    // reset dirty tracking to clean baseline
-    lastSavedHashRef.current = computeStateHash(projectData.canvasState);
-    setIsDirty(false);
+      setCurrentProjectId(projectData.id);
+      setCurrentProjectName(projectData.name);
+      // reset dirty tracking to clean baseline
+      lastSavedHashRef.current = computeStateHash(projectData.canvasState);
+      setIsDirty(false);
       
       setInfoMessage(`Loaded project "${projectData.name}"`);
       setTimeout(() => setInfoMessage(null), 2500);
@@ -334,7 +896,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [computeStateHash, authEmail]);
+  }, [computeStateHash, authEmail, loadFloors]);
 
   // Load projects on component mount
   useEffect(() => {
@@ -360,11 +922,8 @@ export default function Home() {
     return () => window.removeEventListener('resize', update);
   }, [logoPxWidth]);
 
-  // Track dirty state whenever canvas state changes
-  useEffect(() => {
-    const currentHash = computeStateHash(canvasStateRef.current);
-    setIsDirty(currentHash !== lastSavedHashRef.current);
-  }, [loadedCanvasState, computeStateHash]);
+  // Track dirty state whenever canvas state changes - REMOVED to prevent infinite loops
+  // Dirty state is now only managed through onStateChange callback
 
   // Global Ctrl+S to trigger save
   useEffect(() => {
@@ -385,10 +944,10 @@ export default function Home() {
       console.log('[Save] custom event received');
       handleSaveProject();
     };
-    // @ts-ignore - custom event type
+    // @ts-expect-error Custom event type dispatched from canvas layer
     window.addEventListener('request-save', onRequestSave);
     return () => {
-      // @ts-ignore
+      // @ts-expect-error Custom event type dispatched from canvas layer
       window.removeEventListener('request-save', onRequestSave);
     };
   }, [handleSaveProject]);
@@ -402,15 +961,18 @@ export default function Home() {
           <div className="w-full max-w-2xl mx-auto">
             <div className="text-center mb-6">
               <div className="mx-auto mb-4" style={{ width: logoPxWidth ? `${logoPxWidth}px` : undefined }}>
-                <picture>
-                  <source srcSet="/uctel-logo.png" type="image/png" />
-                  <img
-                    src="/uctel-logo.svg"
+                {showLogo && (
+                  <Image
+                    src={logoSource}
                     alt="UCtel"
+                    width={logoPxWidth && logoPxWidth > 0 ? logoPxWidth : 320}
+                    height={64}
+                    sizes="(max-width: 640px) 80vw, 320px"
                     className="h-16 w-full object-contain select-none mx-auto block"
-                    onError={(e)=>{ (e.currentTarget as HTMLImageElement).style.display='none'; console.warn('UCtel logo missing'); }}
+                    onError={handleLogoLoadError}
+                    priority
                   />
-                </picture>
+                )}
               </div>
               <h1 ref={titleRef} className="text-4xl font-bold text-gray-900 mb-4">Floorplan Analyser</h1>
               <p className="text-lg text-gray-600">Upload your floorplan to start analysing areas, measurements, and antenna coverage</p>
@@ -420,8 +982,7 @@ export default function Home() {
           {/* Large Upload Area (wide to match bar) */}
           <div className="w-full max-w-7xl mx-auto bg-white rounded-2xl shadow-xl p-8">
             <FileUpload 
-              onFileUpload={handleFileUpload} 
-              onPdfImageReady={(d) => setImageUrl(d)} 
+              onFilesReady={handleInitialFloorUpload} 
               disabled={!authEmail}
             />
             
@@ -569,7 +1130,15 @@ export default function Home() {
                           />
                         </div>
                         {project.thumbnailUrl ? (
-                          <img src={project.thumbnailUrl} alt="thumb" className="w-16 h-16 object-cover rounded border" onClick={(e)=>e.stopPropagation()} />
+                          <Image
+                            src={project.thumbnailUrl}
+                            alt={`${project.name} thumbnail`}
+                            width={64}
+                            height={64}
+                            className="w-16 h-16 object-cover rounded border"
+                            onClick={(e)=>e.stopPropagation()}
+                            unoptimized
+                          />
                         ) : (
                           <div className="w-16 h-16 rounded border bg-gray-50 text-gray-400 flex items-center justify-center text-xs" onClick={(e)=>e.stopPropagation()}>No preview</div>
                         )}
@@ -582,7 +1151,7 @@ export default function Home() {
                             </div>
                           </div>
                           <div className="mt-1 text-sm text-gray-600">
-                            {project.antennaCount} antennas • {project.areaCount} areas
+                            {(project.floorCount ?? 0)} floors • {project.antennaCount} antennas • {project.areaCount} areas
                           </div>
                         </div>
                         <div className="flex items-center gap-2 ml-2" onClick={(e)=>e.stopPropagation()}>
@@ -652,20 +1221,96 @@ export default function Home() {
       {/* Fullscreen Canvas */}
       {imageUrl && (
         <FloorplanCanvas 
+          key={canvasInstanceKey}
           imageUrl={imageUrl} 
           scale={scale} 
           scaleUnit={unit}
-          onCalibrate={(s,u)=>{ setScale(s); setUnit(u); }}
+          onCalibrate={(s,u)=>{ 
+            setScale(s); 
+            setUnit(u); 
+            if (currentFloorId) {
+              updateFloorEntry(currentFloorId, floor => ({
+                ...floor,
+                scale: s,
+                units: normaliseUnit(u as Units),
+                dirty: true,
+                updatedAt: new Date(),
+              }));
+            }
+          }}
           requestCalibrateToken={calibrateTick}
           onTrimmedImage={(cropped, _quad, conf)=>{ setImageUrl(cropped); setInfoMessage(`Trimmed frame (confidence ${Math.round((conf||0)*100)}%)`); }}
-          onScaleDetected={(s,u,_m,_c)=>{ setScale(s); setUnit(u); }}
+          onScaleDetected={(s,u,_m,_c)=>{ 
+            setScale(s); 
+            setUnit(u); 
+            if (currentFloorId) {
+              updateFloorEntry(currentFloorId, floor => ({
+                ...floor,
+                scale: s,
+                units: normaliseUnit(u as Units),
+                dirty: true,
+                updatedAt: new Date(),
+              }));
+            }
+          }}
           onReset={handleReset}
-          onStateChange={(state)=>{ canvasStateRef.current = state as CanvasState; const h = computeStateHash(canvasStateRef.current); setIsDirty(h !== lastSavedHashRef.current); }}
+          onStateChange={(state)=>{ 
+            const canvasState = state as CanvasState;
+            canvasStateRef.current = canvasState; 
+            const stateHash = computeStateHash(canvasState);
+            const isDirtyNow = stateHash !== lastSavedHashRef.current;
+
+            if (currentFloorId) {
+              const currentEntry = floors.find(f => f.id === currentFloorId);
+              const previousHash = floorStateHashesRef.current.get(currentFloorId) ?? currentEntry?.stateHash ?? '';
+              floorStateHashesRef.current.set(currentFloorId, stateHash);
+
+              const nextScale = typeof canvasState.scale === 'number'
+                ? canvasState.scale
+                : currentEntry?.scale ?? null;
+              const { stats, units: inferredUnits } = computeFloorStatistics(canvasState);
+              const nextUnits = canvasState.scaleUnit
+                ? normaliseUnit(canvasState.scaleUnit as Units)
+                : inferredUnits || currentEntry?.units || normaliseUnit(unit as Units);
+
+              const shouldUpdate =
+                previousHash !== stateHash ||
+                (currentEntry && (
+                  currentEntry.dirty !== isDirtyNow ||
+                  currentEntry.scale !== nextScale ||
+                  currentEntry.units !== nextUnits
+                ));
+
+              if (shouldUpdate) {
+                updateFloorEntry(currentFloorId, floor => ({
+                  ...floor,
+                  canvasState,
+                  stats,
+                  scale: nextScale,
+                  units: nextUnits,
+                  dirty: isDirtyNow,
+                  loaded: true,
+                  updatedAt: previousHash === stateHash ? floor.updatedAt : new Date(),
+                  stateHash,
+                }));
+              }
+            }
+
+            setIsDirty(isDirtyNow); 
+          }}
           onSaveProject={handleSaveProject}
           loadedCanvasState={loadedCanvasState}
           isSaving={isSaving}
           justSaved={justSaved}
           isUpdate={!!currentProjectId}
+          // Multi-floor props
+          floors={floorSummaries}
+          currentFloorId={currentFloorId}
+          onSelectFloor={handleSelectFloor}
+          onRenameFloor={handleRenameFloor}
+          onDeleteFloor={handleDeleteFloor}
+          onAddFloor={handleAddFloor}
+          floorsLoading={floorsLoading}
         />
       )}
 
@@ -677,6 +1322,15 @@ export default function Home() {
         onCancel={() => setShowNameModal(false)}
         onConfirm={(name) => { setShowNameModal(false); setCurrentProjectName(name); handleSaveProject(name); }}
       />
+
+      {/* Floor Upload Modal */}
+      {showFloorUpload && (
+        <FloorUpload
+          onFilesUpload={handleFloorUpload}
+          onCancel={handleCancelFloorUpload}
+          multiple={true}
+        />
+      )}
     </main>
   );
 }

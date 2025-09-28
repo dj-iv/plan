@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom';
 import Portal from './Portal';
 import SmartAutoPlaceButton from './SmartAutoPlaceButton';
+import FloorsPanel from './FloorsPanel';
 import useFixAutoPlaceButton from '@/hooks/useFixAutoPlaceButton';
 // Built-in deterministic full-coverage placement (self-contained to avoid module export issues)
 type FCAntenna = { id:string; position: {x:number;y:number}; range:number; power?:number };
@@ -124,6 +125,14 @@ interface FloorplanCanvasProps {
   isSaving?: boolean; // saving state for Save button UI
   justSaved?: boolean; // briefly show Saved ✓ after save completes
   isUpdate?: boolean; // whether current project exists (changes button label)
+  // Multi-floor support
+  floors?: import('@/types/project').FloorSummary[];
+  currentFloorId?: string | null;
+  onSelectFloor?: (floorId: string) => void;
+  onRenameFloor?: (floorId: string, name: string) => void;
+  onDeleteFloor?: (floorId: string) => void;
+  onAddFloor?: () => void;
+  floorsLoading?: boolean;
 }
 
 interface Point {
@@ -189,7 +198,31 @@ interface Snapshot {
   canvasHeight: number;
 }
 
-export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrate, requestCalibrateToken, onFullscreenChange, onTrimmedImage, onScaleDetected, onReset, onStateChange, onSaveProject, loadedCanvasState, isSaving, justSaved, isUpdate }: FloorplanCanvasProps) {
+export default function FloorplanCanvas({ 
+  imageUrl, 
+  scale, 
+  scaleUnit, 
+  onCalibrate, 
+  requestCalibrateToken, 
+  onFullscreenChange, 
+  onTrimmedImage, 
+  onScaleDetected, 
+  onReset, 
+  onStateChange, 
+  onSaveProject, 
+  loadedCanvasState, 
+  isSaving, 
+  justSaved, 
+  isUpdate,
+  // Multi-floor props
+  floors = [],
+  currentFloorId = null,
+  onSelectFloor,
+  onRenameFloor,
+  onDeleteFloor,
+  onAddFloor,
+  floorsLoading = false
+}: FloorplanCanvasProps) {
   useEffect(() => {
     console.log('[Canvas] onSaveProject present:', typeof onSaveProject);
   }, [onSaveProject]);
@@ -291,6 +324,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   const undoRef = useRef<() => void>();
   const redoRef = useRef<() => void>();
   const draggingVertexIdxRef = useRef<number | null>(null);
+  const processedLoadedStateRef = useRef<any>(null);
 
   // Utility function to scale coordinates when loading saved state
   const scaleCoordinates = useCallback((coords: any, fromImageDimensions: {width: number, height: number}, toImageDimensions: {width: number, height: number}): any => {
@@ -605,6 +639,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       antennas,
       areas,
       scale,
+      scaleUnit,
       showCoverage,
       showRadiusBoundary,
       antennaRange,
@@ -634,7 +669,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       originalImageHeight: image?.height || 0,
     };
     try { onStateChange(currentState); } catch {}
-  }, [onStateChange, antennas, areas, scale, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, autoHolesPreview, autoHolesIndex, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions, zoom, pan, canvasSize.width, canvasSize.height, image]);
+  }, [onStateChange, antennas, areas, scale, scaleUnit, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, autoHolesPreview, autoHolesIndex, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions, zoom, pan, canvasSize.width, canvasSize.height, image]);
 
   const drawCanvas = () => {
     if (!image || !imageLoaded) return;
@@ -1798,6 +1833,10 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   useEffect(() => {
     if (!loadedCanvasState || !image) return;
     
+    // Prevent infinite loops by checking if we've already processed this state
+    if (processedLoadedStateRef.current === loadedCanvasState) return;
+    processedLoadedStateRef.current = loadedCanvasState;
+    
     // Use saved canvas size for display if available
     const savedImageDimensions = {
       width: loadedCanvasState.originalImageWidth || loadedCanvasState.canvasWidth || 0,
@@ -1806,7 +1845,15 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
 
     // If saved canvas size is available, force display size to match
     if (loadedCanvasState.canvasWidth && loadedCanvasState.canvasHeight) {
-      setCanvasSize({ width: loadedCanvasState.canvasWidth, height: loadedCanvasState.canvasHeight });
+      setCanvasSize(prev => {
+        const newWidth = loadedCanvasState.canvasWidth;
+        const newHeight = loadedCanvasState.canvasHeight;
+        // Only update if there's a significant difference to prevent infinite loops
+        if (Math.abs(prev.width - newWidth) < 2 && Math.abs(prev.height - newHeight) < 2) {
+          return prev;
+        }
+        return { width: newWidth, height: newHeight };
+      });
     }
 
     const currentImageDimensions = {
@@ -1828,6 +1875,49 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
     const scaleIfNeeded = needsScaling ? 
       (coords: any) => scaleCoordinates(coords, savedImageDimensions, currentImageDimensions) : 
       (coords: any) => coords;
+
+    // Reset baseline values so floors don't inherit previous state
+    historyRef.current = [];
+    redoHistoryRef.current = [];
+    undoRef.current = undefined;
+    redoRef.current = undefined;
+    setAntennas([]);
+    setPreviewAntennas([]);
+    setSelectedAntennaId(null);
+    setIsDraggingAntenna(false);
+    setIsPlacingAntennas(false);
+  setLockPositions(true);
+  setAntennaDensity(130);
+    setAreas([]);
+    setCurrentArea([]);
+    setCalibrationPoints([]);
+    setCalibrationAreaPoints([]);
+    setCalibrationAreaReal('');
+  setCalibrationReal('');
+  setCalibrationUnit(scaleUnit || 'meters');
+    setPerimeter(null);
+    setPerimeterRaw(null);
+  setPerimeterConfidence(null);
+    setHoles([]);
+    setObjects([]);
+    setJustSavedObject(false);
+    setAutoHolesPreview([]);
+    setAutoHolesIndex(-1);
+  setEditHoleIndex(null);
+    setExcludeCurrent([]);
+    setRoi(null);
+    setMode('select');
+    setManualRegions([]);
+    setManualHoles([]);
+    setManualResult(null);
+    setSelections([]);
+    setSavedAreas([]);
+    setSavedExclusions([]);
+    setShowCoverage(true);
+    setShowRadiusBoundary(true);
+    setAntennaRange(8);
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
 
     if (loadedCanvasState.antennas) setAntennas(scaleIfNeeded(loadedCanvasState.antennas));
     if (loadedCanvasState.areas) setAreas(scaleIfNeeded(loadedCanvasState.areas));
@@ -1886,7 +1976,7 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
         setPan(loadedCanvasState.pan);
       }
     }
-  }, [loadedCanvasState, image, scaleCoordinates]);
+  }, [loadedCanvasState, image, scaleUnit]);
 
   const calibrationDistancePx = () => {
     if (calibrationPoints.length < 2 || !image) return 0;
@@ -2803,15 +2893,8 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
   });
   
   // Define area summaries based on saved areas
-  const areaSummaries = areas.map((area, index) => ({
-    label: `Area ${index + 1}`,
-    value: area.area || 0
-  }));
   
   // Calculate total from both manual selections and saved areas
-  const manualTotal = selections.reduce((s, it) => s + it.value, 0);
-  const savedAreasTotal = areaSummaries.reduce((s, it) => s + it.value, 0);
-  const consolidatedTotal = manualTotal + savedAreasTotal;
 
   const content = (
     <div className="flex flex-col relative h-full min-h-0">
@@ -3351,69 +3434,21 @@ export default function FloorplanCanvas({ imageUrl, scale, scaleUnit, onCalibrat
       )}
 
   {/* Area Results - Professional */}
-  {(selections.length > 0) && (
-        <div className="absolute right-4 top-32 z-[1100] p-4 bg-white/95 border rounded-lg shadow max-h-96 overflow-auto w-fit min-w-72 max-w-80">
-          <div className="mb-4">
-            <h3 className="font-semibold text-gray-900 mb-2">Summary</h3>
-            {/* Unified selections list */}
-          </div>
-          <div className="space-y-3 mb-4">
-            {selections.map((s, index) => (
-              <div key={s.id} className="flex items-center justify-between p-3 bg-white rounded-lg border shadow-sm">
-                <div className="flex items-center space-x-3">
-                  <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-orange-500 rounded-full flex items-center justify-center">
-                    <span className="text-white text-xs font-bold">{index + 1}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      className="border rounded px-2 py-1 text-sm"
-                      placeholder={s.value >= 0 ? 'Area label' : 'Exclusion label'}
-                      value={s.label || ''}
-                      onChange={(e)=> setSelections(list => list.map(it => it.id===s.id ? { ...it, label: e.target.value } : it))}
-                      style={{ width: 140 }}
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center space-x-3">
-                  <div className="text-right">
-                    <p className={`font-semibold ${s.value >= 0 ? 'text-blue-600' : 'text-red-600'}`}>
-                      {scale ? formatAreaDisplay(s.value) : '—'}
-                    </p>
-                  </div>
-                  <button onClick={() => { pushHistory(); setSelections(list => list.filter(it => it.id !== s.id)); }} className="w-6 h-6 bg-red-100 hover:bg-red-200 text-red-600 rounded-full flex items-center justify-center text-xs transition-colors">✕</button>
-                </div>
-              </div>
-            ))}
-          </div>
-          {selections.length > 0 && (
-            <div className="mb-3">
-              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">By label</h4>
-              <div className="space-y-1">
-                {(() => {
-                  const grouped = selections.reduce<Record<string, number>>((acc, s) => {
-                    const key = s.label || (s.value >= 0 ? 'Area' : 'Exclusion');
-                    acc[key] = (acc[key] || 0) + s.value;
-                    return acc;
-                  }, {});
-                  return Object.entries(grouped).map(([label, value]) => (
-                    <div key={label} className="flex items-center justify-between text-sm">
-                      <span className="text-gray-700">{label}</span>
-                      <span className={`font-medium ${value >= 0 ? 'text-blue-600' : 'text-red-600'}`}>{scale ? formatAreaDisplay(value) : '—'}</span>
-                    </div>
-                  ));
-                })()}
-              </div>
-            </div>
-          )}
-          {scale && (
-            <div className="p-3 bg-gradient-to-r from-blue-500 to-orange-500 rounded-lg text-white">
-              <div className="flex items-center justify-between">
-                <h4 className="font-semibold">Total</h4>
-                <p className="text-lg font-bold">{formatAreaDisplay(consolidatedTotal)}</p>
-              </div>
-            </div>
-          )}
-          {/* Removed duplicate bottom Total card to keep a single Total in header */}
+  {(selections.length > 0 || floors.length > 0) && (
+        <div className="absolute right-4 top-32 bottom-4 z-[1100] p-4 bg-white/95 border rounded-lg shadow flex flex-col min-w-80 max-w-96">
+          <h3 className="font-semibold text-gray-900 mb-4">Summary</h3>
+
+          {/* Floors Panel - Always show so Add Floor button is available */}
+          <FloorsPanel
+            floors={floors}
+            currentFloorId={currentFloorId}
+            onSelectFloor={onSelectFloor || (() => {})}
+            onRenameFloor={onRenameFloor || (() => {})}
+            onDeleteFloor={onDeleteFloor || (() => {})}
+            onAddFloor={onAddFloor || (() => {})}
+            isLoading={floorsLoading}
+            className="flex-1 overflow-y-auto pr-1"
+          />
         </div>
       )}
 

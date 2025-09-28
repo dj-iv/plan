@@ -7,13 +7,17 @@
 
 let pdfjsLib;
 
+const DEFAULT_RENDER_SCALE = 2;
+const SAMPLE_TARGET_PIXELS = 400000;
+const MAX_SAMPLE_STEP = 8;
+
 // Load PDF.js library dynamically
 const loadPdfJs = async () => {
   if (!pdfjsLib) {
     try {
       // Import the library
       pdfjsLib = await import('pdfjs-dist');
-      
+
       // Set the worker source
       const pdfWorkerSrc = `//cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
       pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
@@ -25,6 +29,95 @@ const loadPdfJs = async () => {
   return pdfjsLib;
 };
 
+const computeInkCoverage = (context, width, height) => {
+  try {
+    const totalPixels = width * height;
+    if (!totalPixels) {
+      return 0;
+    }
+    const sampleStep = Math.min(
+      MAX_SAMPLE_STEP,
+      Math.max(1, Math.floor(Math.sqrt(totalPixels / SAMPLE_TARGET_PIXELS)))
+    );
+    const imageData = context.getImageData(0, 0, width, height);
+    const { data } = imageData;
+    let samples = 0;
+    let inked = 0;
+    for (let y = 0; y < height; y += sampleStep) {
+      for (let x = 0; x < width; x += sampleStep) {
+        const idx = (y * width + x) * 4;
+        const alpha = data[idx + 3];
+        if (alpha < 10) {
+          continue;
+        }
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const brightness = (r + g + b) / 3;
+        if (brightness < 250) {
+          inked += 1;
+        }
+        samples += 1;
+      }
+    }
+    if (!samples) {
+      return 0;
+    }
+    return inked / samples;
+  } catch (error) {
+    console.warn('Failed to compute ink coverage for PDF page', error);
+    return null;
+  }
+};
+
+const getPdfDocument = async (file) => {
+  const pdfjs = await loadPdfJs();
+  const fileURL = URL.createObjectURL(file);
+  const loadingTask = pdfjs.getDocument(fileURL);
+  const pdfDocument = await loadingTask.promise;
+  const cleanup = () => {
+    try {
+      pdfDocument?.destroy?.();
+    } catch (err) {
+      console.warn('Error destroying PDF document', err);
+    }
+    URL.revokeObjectURL(fileURL);
+  };
+  return { pdfDocument, cleanup };
+};
+
+const renderPageFromDocument = async (pdfDocument, pageNumber, options = {}) => {
+  const scale = options.scale || DEFAULT_RENDER_SCALE;
+  console.log(`Rendering PDF page ${pageNumber} at scale ${scale}`);
+  const page = await pdfDocument.getPage(pageNumber);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d', { alpha: false });
+  if (!context) {
+    throw new Error('Could not get canvas context');
+  }
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const renderContext = {
+    canvasContext: context,
+    viewport,
+    enableWebGL: true,
+    renderInteractiveForms: false,
+  };
+  await page.render(renderContext).promise;
+  const coverage = computeInkCoverage(context, canvas.width, canvas.height);
+  const dataUrl = canvas.toDataURL('image/png');
+  page.cleanup?.();
+  canvas.width = 0;
+  canvas.height = 0;
+  return {
+    dataUrl,
+    width: viewport.width,
+    height: viewport.height,
+    coverage,
+  };
+};
+
 /**
  * Renders a PDF file to an image
  * @param {File} file - The PDF file to render
@@ -34,76 +127,52 @@ const loadPdfJs = async () => {
  * @returns {Promise<string>} - Promise that resolves with the data URL of the rendered page
  */
 export async function renderPdfToImage(file, pageNumber = 1, options = {}) {
+  const { pdfDocument, cleanup } = await getPdfDocument(file);
   try {
-    console.log(`Starting PDF rendering for page ${pageNumber}`);
-    
-    // Default options
-    const scale = options.scale || 2;
-    
-    // Load PDF.js
-    const pdfjs = await loadPdfJs();
-    console.log(`PDF.js loaded, version ${pdfjs.version}`);
-    
-    // Create a URL for the PDF file
-    const fileURL = URL.createObjectURL(file);
-    
-    // Load the PDF document
-    console.log('Loading PDF document');
-    const loadingTask = pdfjs.getDocument(fileURL);
-    const pdfDocument = await loadingTask.promise;
-    console.log(`PDF document loaded with ${pdfDocument.numPages} pages`);
-    
-    // Get the specified page
-    const page = await pdfDocument.getPage(pageNumber);
-    console.log('PDF page loaded');
-    
-    // Get the viewport at the specified scale
-    const viewport = page.getViewport({ scale });
-    
-    // Create a canvas and get its context
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d', { alpha: false });
-    if (!context) {
-      throw new Error('Could not get canvas context');
+    const { dataUrl } = await renderPageFromDocument(pdfDocument, pageNumber, options);
+    return dataUrl;
+  } finally {
+    cleanup();
+  }
+}
+
+/**
+ * Render every page in a PDF to image data with simple ink-density metrics.
+ * @param {File} file
+ * @param {Object} options
+ * @param {number} options.scale
+ * @param {number} options.maxPages - Optional safety limit for very large PDFs
+ * @returns {Promise<{pages: Array, pageCount: number}>}
+ */
+export async function renderPdfToImages(file, options = {}) {
+  const { pdfDocument, cleanup } = await getPdfDocument(file);
+  try {
+    const pageCount = pdfDocument.numPages;
+    const maxPages = options.maxPages && Number.isFinite(options.maxPages)
+      ? Math.min(options.maxPages, pageCount)
+      : pageCount;
+    const pages = [];
+    for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
+      try {
+        const result = await renderPageFromDocument(pdfDocument, pageNumber, options);
+        pages.push({
+          pageNumber,
+          dataUrl: result.dataUrl,
+          width: result.width,
+          height: result.height,
+          coverage: result.coverage,
+        });
+      } catch (pageError) {
+        console.warn(`Failed to render PDF page ${pageNumber}`, pageError);
+        pages.push({
+          pageNumber,
+          error: pageError instanceof Error ? pageError.message : String(pageError),
+        });
+      }
     }
-    
-    // Set canvas dimensions to match the viewport
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    console.log(`Canvas created with dimensions: ${canvas.width} x ${canvas.height}`);
-    
-    // Render the page
-    console.log('Rendering PDF page to canvas');
-    const renderContext = {
-      canvasContext: context,
-      viewport: viewport,
-      enableWebGL: true,
-      renderInteractiveForms: false
-    };
-    
-    try {
-      await page.render(renderContext).promise;
-      console.log('PDF page rendered successfully');
-    } catch (renderError) {
-      console.error('Error rendering PDF page:', renderError);
-      throw new Error(`Error rendering PDF: ${renderError.message}`);
-    }
-    
-    // Convert the canvas to a data URL
-    try {
-      const dataURL = canvas.toDataURL('image/png');
-      console.log('Canvas converted to PNG data URL');
-      
-      // Clean up
-      URL.revokeObjectURL(fileURL);
-      return dataURL;
-    } catch (dataUrlError) {
-      console.error('Error creating data URL:', dataUrlError);
-      throw new Error('Could not create image from rendered PDF page');
-    }
-  } catch (error) {
-    console.error('PDF rendering failed:', error);
-    throw error;
+    return { pages, pageCount };
+  } finally {
+    cleanup();
   }
 }
 

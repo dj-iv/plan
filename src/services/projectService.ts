@@ -6,6 +6,7 @@ import { ensureAnonymousAuth } from '@/lib/firebaseAuth';
 import { db, storage } from '@/lib/firebase';
 import { ProjectData, ProjectSummary, SaveProjectRequest, CanvasState } from '@/types/project';
 import { getAuth } from 'firebase/auth';
+import { computeFloorStatistics } from '@/utils/floorStats';
 
 const PROJECTS_COLLECTION = 'projects';
 
@@ -159,27 +160,63 @@ export class ProjectService {
   const uid = getAuth().currentUser?.uid;
   if (!uid) throw new Error('Authentication required to list projects.');
     const base = collection(db, PROJECTS_COLLECTION);
-    const qs = await getDocs(query(base, orderBy('updatedAt', 'desc')));
-    const list: ProjectSummary[] = [];
+  const qs = await getDocs(query(base, orderBy('updatedAt', 'desc')));
+  const baseSummaries: ProjectSummary[] = [];
     qs.forEach((d) => {
       const data = d.data() as any;
       const createdAt = data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date();
       const updatedAt = data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date();
       const lastOpenedAt = data.lastOpenedAt instanceof Timestamp ? data.lastOpenedAt.toDate() : undefined;
-      list.push({
+      baseSummaries.push({
         id: d.id,
         name: data.name,
         description: data.description,
         createdAt,
         updatedAt,
         lastOpenedAt,
-        thumbnailUrl: data.metadata?.thumbnailUrl,
+        thumbnailUrl: data.metadata?.thumbnailUrl || data.metadata?.imageUrl,
         antennaCount: data.canvasState?.antennas?.length || 0,
         areaCount: data.canvasState?.areas?.length || 0,
+        floorCount: data.floorCount || 0,
       });
     });
+    const enriched = await Promise.all(baseSummaries.map(async (summary) => {
+      try {
+        const floorsSnap = await getDocs(query(collection(db, PROJECTS_COLLECTION, summary.id, 'floors'), orderBy('orderIndex', 'asc')));
+        if (!floorsSnap.empty) {
+          let totalAntennas = 0;
+          let totalAreas = 0;
+          let firstPreview: string | undefined = summary.thumbnailUrl;
+          floorsSnap.forEach(floorDoc => {
+            const floorData = floorDoc.data() as any;
+            const canvasState = reconstructNestedPointArrays(floorData.canvasState || {});
+            const { stats } = computeFloorStatistics(canvasState);
+            totalAntennas += stats.antennaCount;
+            totalAreas += stats.areaCount;
+            if (!firstPreview) {
+              firstPreview = floorData.metadata?.thumbnailUrl || floorData.metadata?.imageUrl || firstPreview;
+            }
+          });
+          return {
+            ...summary,
+            antennaCount: totalAntennas,
+            areaCount: totalAreas,
+            floorCount: floorsSnap.size,
+            thumbnailUrl: firstPreview,
+          };
+        }
+      } catch (e) {
+        console.warn('ProjectService: Failed to enrich project summary', summary.id, e);
+      }
+
+      return {
+        ...summary,
+        thumbnailUrl: summary.thumbnailUrl,
+      };
+    }));
+
     // Sort primarily by lastOpenedAt desc if present, else fallback to updatedAt desc
-    return list.sort((a, b) => {
+    return enriched.sort((a, b) => {
       const aT = (a.lastOpenedAt?.getTime?.() || 0);
       const bT = (b.lastOpenedAt?.getTime?.() || 0);
       if (aT !== bT) return bT - aT;
