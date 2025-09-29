@@ -15,6 +15,12 @@ import { captureCanvasThumbnail } from '@/utils/thumbnail';
 import { computeFloorStatistics, normaliseUnit } from '@/utils/floorStats';
 import { onAuthChange, signInWithGoogle, signOutUser, getCurrentUser, ensureAnonymousAuth } from '@/lib/firebaseAuth';
 
+declare global {
+  interface WindowEventMap {
+    'request-save': CustomEvent<void>;
+  }
+}
+
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [imageUrl, setImageUrl] = useState<string>("");
@@ -944,10 +950,8 @@ export default function Home() {
       console.log('[Save] custom event received');
       handleSaveProject();
     };
-    // @ts-expect-error Custom event type dispatched from canvas layer
     window.addEventListener('request-save', onRequestSave);
     return () => {
-      // @ts-expect-error Custom event type dispatched from canvas layer
       window.removeEventListener('request-save', onRequestSave);
     };
   }, [handleSaveProject]);
