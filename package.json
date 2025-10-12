@@ -14,6 +14,7 @@
     "fabric": "^5.4.0",
     "firebase": "^10.12.4",
     "next": "14.2.5",
+    "openai": "^6.3.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^3.10.111",
     "react": "^18",
@@ -21,6 +22,7 @@
     "react-dropzone": "^14.2.3"
   },
   "devDependencies": {
+    "@babel/parser": "^7.28.4",
     "@types/fabric": "^5.3.8",
     "@types/node": "^20",
     "@types/react": "^18",

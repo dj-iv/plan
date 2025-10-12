@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import Image from 'next/image';
 import { renderPdfToImage, renderPdfFallback, renderPdfAlternative } from '../utils/pdfRenderer';
 
 interface PdfDirectConverterProps {
@@ -229,11 +230,16 @@ const PdfDirectConverter: React.FC<PdfDirectConverterProps> = ({
       {convertedImage && (
         <div className="space-y-4">
           <div className="border rounded-md p-2">
-            <img 
-              src={convertedImage} 
-              alt="Converted PDF" 
-              className="max-h-64 mx-auto"
-            />
+            <div className="relative mx-auto h-64 w-full">
+              <Image
+                src={convertedImage}
+                alt="Converted PDF"
+                fill
+                unoptimized
+                className="object-contain"
+                sizes="(max-width: 768px) 100vw, 640px"
+              />
+            </div>
           </div>
           
           <div className="flex space-x-2">

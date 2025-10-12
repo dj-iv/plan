@@ -12,7 +12,7 @@ export class AIScaleDetector {
     return this.instance;
   }
 
-  async detectScale(imageUrl: string): Promise<ScaleResult[]> {
+  async detectScale(_imageUrl: string): Promise<ScaleResult[]> {
     console.log('AI scale detection has been disabled');
     return [];
   }

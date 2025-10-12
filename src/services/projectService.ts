@@ -4,11 +4,56 @@ import {
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { ensureAnonymousAuth } from '@/lib/firebaseAuth';
 import { db, storage } from '@/lib/firebase';
-import { ProjectData, ProjectSummary, SaveProjectRequest, CanvasState } from '@/types/project';
+import { ProjectData, ProjectSummary, SaveProjectRequest, CanvasState, ProjectEngineer } from '@/types/project';
+import { FloorService } from '@/services/floorService';
 import { getAuth } from 'firebase/auth';
 import { computeFloorStatistics } from '@/utils/floorStats';
 
 const PROJECTS_COLLECTION = 'projects';
+
+function deriveDisplayName(displayName?: string | null, email?: string | null): string | undefined {
+  if (displayName && displayName.trim().length > 0) {
+    return displayName.trim();
+  }
+  if (!email) return undefined;
+  const localPart = email.split('@')[0] || '';
+  if (!localPart) return undefined;
+  return localPart
+    .replace(/[._-]+/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+function buildEngineerFromUser(user: ReturnType<typeof getAuth>['currentUser']): ProjectEngineer | undefined {
+  if (!user) return undefined;
+  const email = user.email || undefined;
+  const displayName = deriveDisplayName(user.displayName, user.email);
+  if (!email && !displayName) {
+    return {
+      uid: user.uid || undefined,
+    };
+  }
+  return {
+    uid: user.uid || undefined,
+    email,
+    displayName,
+  };
+}
+
+function normaliseEngineer(raw: any): ProjectEngineer | undefined {
+  if (!raw) return undefined;
+  const email = raw.email || undefined;
+  const displayName = deriveDisplayName(raw.displayName, raw.email);
+  const uid = raw.uid || undefined;
+  if (!uid && !email && !displayName) return undefined;
+  return {
+    uid,
+    email,
+    displayName,
+  };
+}
 
 function removeUndefinedValues(obj: any): any {
   if (obj === null || obj === undefined) return null;
@@ -50,9 +95,11 @@ function reconstructNestedPointArrays(flat: any): CanvasState {
 export class ProjectService {
   static async saveProject(projectData: SaveProjectRequest, existingProjectId?: string): Promise<string> {
     const projectId = existingProjectId || doc(collection(db, PROJECTS_COLLECTION)).id;
-  await ensureAnonymousAuth();
-  const uid = getAuth().currentUser?.uid;
-  if (!uid) throw new Error('Authentication required to save projects.');
+    await ensureAnonymousAuth();
+    const auth = getAuth();
+    const uid = auth.currentUser?.uid;
+    if (!uid) throw new Error('Authentication required to save projects.');
+    const engineer = buildEngineerFromUser(auth.currentUser);
     // Owner scoping removed; access is controlled via Google domain auth + rules
 
     let imageUrl: string | null = null;
@@ -113,11 +160,14 @@ export class ProjectService {
       updatedAt: Timestamp.fromDate(now),
        lastOpenedAt: Timestamp.fromDate(now),
       version: 1,
+      engineer,
       metadata: {
         originalFileName,
         fileSize,
         imageUrl: imageUrl || '',
         storagePath,
+        imageWidth: projectData.canvasState?.originalImageWidth,
+        imageHeight: projectData.canvasState?.originalImageHeight,
         thumbnailUrl,
       },
       canvasState: flattenNestedPointArrays(projectData.canvasState),
@@ -143,6 +193,7 @@ export class ProjectService {
       updatedAt,
       lastOpenedAt,
       canvasState: reconstructNestedPointArrays(data.canvasState || {}),
+      engineer: normaliseEngineer(data.engineer),
     } as ProjectData;
     
     console.log('ProjectService: Loaded project:', { id: projectId, imageUrl: result.metadata?.imageUrl });
@@ -161,7 +212,7 @@ export class ProjectService {
   if (!uid) throw new Error('Authentication required to list projects.');
     const base = collection(db, PROJECTS_COLLECTION);
   const qs = await getDocs(query(base, orderBy('updatedAt', 'desc')));
-  const baseSummaries: ProjectSummary[] = [];
+    const baseSummaries: ProjectSummary[] = [];
     qs.forEach((d) => {
       const data = d.data() as any;
       const createdAt = data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date();
@@ -178,6 +229,7 @@ export class ProjectService {
         antennaCount: data.canvasState?.antennas?.length || 0,
         areaCount: data.canvasState?.areas?.length || 0,
         floorCount: data.floorCount || 0,
+        engineer: normaliseEngineer(data.engineer),
       });
     });
     const enriched = await Promise.all(baseSummaries.map(async (summary) => {
@@ -225,6 +277,23 @@ export class ProjectService {
   }
 
   static async deleteProject(projectId: string): Promise<void> {
+    try {
+      const floorsSnap = await getDocs(collection(db, PROJECTS_COLLECTION, projectId, 'floors'));
+      if (!floorsSnap.empty) {
+        await Promise.all(
+          floorsSnap.docs.map(async (floorDoc) => {
+            try {
+              await FloorService.deleteFloor(projectId, floorDoc.id);
+            } catch (err) {
+              console.warn('ProjectService: Failed to delete floor during project deletion', projectId, floorDoc.id, err);
+            }
+          })
+        );
+      }
+    } catch (err) {
+      console.warn('ProjectService: Failed to enumerate floors for deletion', projectId, err);
+    }
+
     await deleteDoc(doc(db, PROJECTS_COLLECTION, projectId));
     try {
       const legacyRef = ref(storage, `projects/${projectId}/original-image`);

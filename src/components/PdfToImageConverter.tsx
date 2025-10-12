@@ -32,12 +32,13 @@ const PdfToImageConverter: React.FC<PdfToImageConverterProps> = ({ file, onImage
   // When component mounts, create an object URL for the PDF
   React.useEffect(() => {
     let mounted = true;
+    let objectUrl: string | null = null;
     
     const initialize = async () => {
       if (file) {
-        const url = URL.createObjectURL(file);
+        objectUrl = URL.createObjectURL(file);
         if (mounted) {
-          setPdfUrl(url);
+          setPdfUrl(objectUrl);
           
           // Wait for pdfjs to be ready
           if (pdfjsPromise) {
@@ -52,8 +53,8 @@ const PdfToImageConverter: React.FC<PdfToImageConverterProps> = ({ file, onImage
     
     return () => {
       mounted = false;
-      if (pdfUrl) {
-        URL.revokeObjectURL(pdfUrl);
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
       }
     };
   }, [file]);

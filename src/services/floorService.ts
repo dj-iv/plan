@@ -105,6 +105,8 @@ export class FloorService {
         fileSize,
         imageUrl: imageUrl || '',
         storagePath,
+        imageWidth: payload.canvasState?.originalImageWidth,
+        imageHeight: payload.canvasState?.originalImageHeight,
         thumbnailUrl,
       },
       canvasState: flattenNestedPointArrays(payload.canvasState),
@@ -206,6 +208,12 @@ export class FloorService {
       updatedAt: Timestamp.fromDate(now),
       canvasState: flattenNestedPointArrays(payload.canvasState),
     };
+    if (payload.canvasState?.originalImageWidth) {
+      patch.metadata = { ...(patch.metadata || {}), imageWidth: payload.canvasState.originalImageWidth };
+    }
+    if (payload.canvasState?.originalImageHeight) {
+      patch.metadata = { ...(patch.metadata || {}), imageHeight: payload.canvasState.originalImageHeight };
+    }
     if (payload.name) {
       patch.name = payload.name;
     }

@@ -1,0 +1,21 @@
+[
+  {
+    "origin": [
+      "http://localhost:3000",
+      "https://plan.uctel.co.uk"
+    ],
+    "method": [
+      "GET",
+      "HEAD",
+      "OPTIONS"
+    ],
+    "responseHeader": [
+      "Content-Type",
+      "Authorization",
+      "x-goog-meta-uid",
+      "x-goog-meta-gid",
+      "x-goog-meta-fid"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]

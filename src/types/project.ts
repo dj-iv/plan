@@ -28,12 +28,33 @@ export type Antenna = {
   power?: number; // 0-100
 };
 
+export type ScaleMetadata = {
+  mode: 'distance' | 'area';
+  /** For distance mode this is the measured pixel length; for area it is the pixel area (px²). */
+  pixelValue: number;
+  /** Stored real-world distance in meters (distance mode only). */
+  realMeters?: number;
+  /** Stored real-world area in square meters (area mode only). */
+  realSquareMeters?: number;
+  /** Natural image dimensions when the scale was captured. */
+  imageWidth: number;
+  imageHeight: number;
+  /** Canvas draw dimensions when the scale was captured. */
+  canvasWidth?: number;
+  canvasHeight?: number;
+  /** Original unit label provided by the user (e.g. meters, feet). */
+  unitLabel?: string;
+  /** ISO timestamp string when calibration occurred; useful for diagnostics. */
+  capturedAtIso?: string;
+};
+
 export type CanvasState = {
   // Core geometry/state
   antennas?: Antenna[];
   areas?: Area[];
   scale?: number | null;
   scaleUnit?: Units;
+  scaleMetadata?: ScaleMetadata | null;
   showCoverage?: boolean;
   showRadiusBoundary?: boolean;
   antennaRange?: number;
@@ -96,6 +117,12 @@ export type ProjectSettings = {
   showRadiusBoundary?: boolean;
 };
 
+export type ProjectEngineer = {
+  uid?: string;
+  email?: string;
+  displayName?: string;
+};
+
 export type FloorAreaSummary = {
   id: string;
   label: string;
@@ -128,6 +155,7 @@ export type ProjectData = {
   version: number;
   // Optional: number of floors in subcollection (for multi-floor projects)
   floorCount?: number;
+  engineer?: ProjectEngineer;
   metadata: {
     originalFileName?: string;
     fileSize?: number;
@@ -152,6 +180,7 @@ export type ProjectSummary = {
   antennaCount: number;
   areaCount: number;
   floorCount?: number;
+  engineer?: ProjectEngineer;
 };
 
 // ===== Multi-floor types (subcollection under projects/{pid}/floors/{fid}) =====

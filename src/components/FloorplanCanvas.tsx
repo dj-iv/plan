@@ -1,112 +1,11 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { createPortal } from 'react-dom';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Portal from './Portal';
 import SmartAutoPlaceButton from './SmartAutoPlaceButton';
 import FloorsPanel from './FloorsPanel';
 import useFixAutoPlaceButton from '@/hooks/useFixAutoPlaceButton';
-// Built-in deterministic full-coverage placement (self-contained to avoid module export issues)
-type FCAntenna = { id:string; position: {x:number;y:number}; range:number; power?:number };
-interface FullCoverageOpts {
-  areas: Point[][];
-  scale: number; // meters per pixel
-  rangeMeters: number;
-  power: number;
-  exclusions: Point[][];
-  isPointInPolygon: (p:Point, poly:Point[])=>boolean;
-}
-function generateFullCoverageAntennas(opts: FullCoverageOpts): FCAntenna[] {
-  const { areas, scale, rangeMeters, power, exclusions, isPointInPolygon } = opts;
-  if (!areas?.length || !scale || scale <= 0 || !rangeMeters) return [];
-  const rPx = rangeMeters / scale; // radius in pixels
-  const baseSpacing = rPx * 0.75; // denser seeding to avoid missed edges
-  const antennas: FCAntenna[] = [];
-  const isExcluded = (pt:Point) => exclusions.some(ex => ex.length>=3 && isPointInPolygon(pt, ex));
-
-  // Area & theoretical minimum for diagnostics
-  const polygonAreaPx = areas.reduce((sum, poly) => {
-    if (poly.length < 3) return sum;
-    let a = 0; for (let i=0;i<poly.length;i++){ const j=(i+1)%poly.length; a += poly[i].x*poly[j].y - poly[j].x*poly[i].y; }
-    return sum + Math.abs(a/2);
-  }, 0);
-  const polygonAreaM2 = polygonAreaPx * scale * scale;
-  const antennaDiscArea = Math.PI * rangeMeters * rangeMeters;
-  const theoreticalMin = polygonAreaM2 / antennaDiscArea;
-  const hardCap = Math.min(5000, Math.ceil(theoreticalMin * 3.0));
-  console.log(`COVERAGE METRICS: area=${polygonAreaM2.toFixed(1)}m² radius=${rangeMeters}m theoreticalMin≈${theoreticalMin.toFixed(1)} hardCap=${hardCap}`);
-
-  // 1. Seed grid (staggered) for each polygon
-  areas.forEach((poly, areaIdx) => {
-    if (poly.length < 3) return;
-    const minX = Math.min(...poly.map(p=>p.x));
-    const maxX = Math.max(...poly.map(p=>p.x));
-    const minY = Math.min(...poly.map(p=>p.y));
-    const maxY = Math.max(...poly.map(p=>p.y));
-    let row = 0;
-    for (let y = minY - rPx; y <= maxY + rPx; y += baseSpacing, row++) {
-      const xOffset = (row % 2 === 0) ? 0 : baseSpacing / 2;
-      for (let x = minX - rPx; x <= maxX + rPx; x += baseSpacing) {
-        const pt = { x: x + xOffset, y };
-        if (!isPointInPolygon(pt, poly) || isExcluded(pt)) continue;
-        // prevent super-close duplicates
-        let tooClose = false;
-        for (const a of antennas) {
-          const dx=a.position.x-pt.x, dy=a.position.y-pt.y; if (dx*dx+dy*dy < (rPx*0.35)*(rPx*0.35)) { tooClose = true; break; }
-        }
-        if (tooClose) continue;
-        antennas.push({ id:`seed-${areaIdx}-${antennas.length}`, position: pt, range: rangeMeters, power });
-        if (antennas.length > 1500) { console.warn('Hard cap reached during seeding'); return; }
-      }
-    }
-  });
-
-  // 2. Iterative gap fill using farthest-point sampling
-  const rSq = rPx * rPx;
-  // Build sample set (shared across polygons)
-  const samples: Point[] = [];
-  const sampleStep = rPx * 0.4; // finer step for accuracy
-  areas.forEach(poly => {
-    const minX = Math.min(...poly.map(p=>p.x));
-    const maxX = Math.max(...poly.map(p=>p.x));
-    const minY = Math.min(...poly.map(p=>p.y));
-    const maxY = Math.max(...poly.map(p=>p.y));
-    for (let y = minY; y <= maxY; y += sampleStep) {
-      for (let x = minX; x <= maxX; x += sampleStep) {
-        const pt = {x,y};
-        if (!isPointInPolygon(pt, poly) || isExcluded(pt)) continue;
-        samples.push(pt);
-      }
-    }
-  });
-  if (!samples.length) return antennas;
-
-  const coverageThreshold = (rangeMeters < 5 ? 0.9995 : 0.997); // stricter for small radii
-  let iteration = 0;
-  while (iteration < 5000) { // generous cap for convergence
-    iteration++;
-    let uncoveredCount = 0;
-    let farthest: Point | null = null;
-    let farthestDistSq = -1;
-    for (const s of samples) {
-      let covered = false; let bestDistSq = Infinity;
-      for (const a of antennas) {
-        const dx = a.position.x - s.x; const dy = a.position.y - s.y; const d2 = dx*dx+dy*dy;
-        if (d2 <= rSq) { covered = true; break; }
-        if (d2 < bestDistSq) bestDistSq = d2;
-      }
-      if (!covered) {
-        uncoveredCount++;
-        if (bestDistSq > farthestDistSq) { farthestDistSq = bestDistSq; farthest = s; }
-      }
-    }
-    const coveredRatio = 1 - (uncoveredCount / samples.length);
-    console.log(`COVERAGE PASS ${iteration}: covered ${(coveredRatio*100).toFixed(3)}% antennas=${antennas.length} uncovered=${uncoveredCount}`);
-    if (coveredRatio >= coverageThreshold || !farthest) break;
-    antennas.push({ id:`gap-${antennas.length}`, position: farthest, range: rangeMeters, power });
-    if (antennas.length > hardCap) { console.warn('Global hard cap reached'); break; }
-  }
-  console.log(`FULL COVERAGE FINAL: samples=${samples.length} antennas=${antennas.length} theoreticalMin≈${theoreticalMin.toFixed(1)}`);
-  return antennas;
-}
+import { simpleAutoPlaceAntennas } from '@/utils/antennaUtils';
+import type { ScaleMetadata } from '@/types/project';
+// Placement logic provided by antennaUtils.simpleAutoPlaceAntennas
 // Trim now runs in a Web Worker at /workers/trim-opencv.js to avoid blocking UI
 
 interface FloorplanCanvasProps {
@@ -168,6 +67,10 @@ interface Antenna {
   power?: number; // 0-100 percentage, optional to match antennaUtils
 }
 
+const CANVAS_VERTICAL_PADDING = 16;
+const CANVAS_EDGE_MARGIN = 16;
+const SUMMARY_GAP = 32;
+
 // Snapshot of canvas state for undo/redo and save payloads
 interface Snapshot {
   areas: Area[];
@@ -175,6 +78,7 @@ interface Snapshot {
   calibrationPoints: Point[];
   calibrationAreaPoints: Point[];
   calibrationAreaReal: string;
+  scaleMetadata: ScaleMetadata | null;
   perimeter: Point[] | null;
   perimeterRaw: Point[] | null;
   holes: Point[][];
@@ -244,6 +148,10 @@ export default function FloorplanCanvas({
     };
   }, []);
   const containerRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const summaryRef = useRef<HTMLDivElement>(null);
+  const [controlsHeight, setControlsHeight] = useState(0);
+  const [summaryWidth, setSummaryWidth] = useState(0);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [imageLoaded, setImageLoaded] = useState(false);
@@ -266,6 +174,7 @@ export default function FloorplanCanvas({
   const [busy, setBusy] = useState(false);
   const [scaleConfidence, setScaleConfidence] = useState<number | null>(null);
   const [scaleMethod, setScaleMethod] = useState<string | null>(null);
+  const [scaleMetadata, setScaleMetadata] = useState<ScaleMetadata | null>(null);
   // Region of interest and perimeter detection
   const [roi, setRoi] = useState<{x:number;y:number;w:number;h:number}|null>(null);
   const roiDragRef = useRef<{x:number;y:number}|null>(null);
@@ -292,10 +201,90 @@ export default function FloorplanCanvas({
   const [manualHoles, setManualHoles] = useState<Point[][]>([]);
   const [manualResult, setManualResult] = useState<number | null>(null);
   const manualActive = manualRegions.length > 0 || manualHoles.length > 0 || currentArea.length >= 1;
-  
+  const summaryVisible = (selections.length > 0 || floors.length > 0);
+  const [summaryTopOffset, setSummaryTopOffset] = useState(CANVAS_VERTICAL_PADDING);
+
   // Antenna placement feature
   const [antennas, setAntennas] = useState<Antenna[]>([]);
   const [selectedAntennaId, setSelectedAntennaId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const updateHeight = () => {
+      if (controlsRef.current) {
+        setControlsHeight(controlsRef.current.offsetHeight);
+      }
+    };
+
+    updateHeight();
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && controlsRef.current) {
+      observer = new ResizeObserver(() => updateHeight());
+      observer.observe(controlsRef.current);
+    }
+
+    window.addEventListener('resize', updateHeight);
+
+    return () => {
+      window.removeEventListener('resize', updateHeight);
+      if (observer) observer.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    const updateWidth = () => {
+      const width = summaryRef.current?.offsetWidth || 0;
+      setSummaryWidth(prev => (Math.abs(prev - width) > 1 ? width : prev));
+    };
+
+    updateWidth();
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && summaryRef.current) {
+      observer = new ResizeObserver(() => updateWidth());
+      observer.observe(summaryRef.current);
+    }
+
+    window.addEventListener('resize', updateWidth);
+
+    return () => {
+      window.removeEventListener('resize', updateWidth);
+      if (observer) observer.disconnect();
+    };
+  }, [floors.length, selections.length]);
+
+  useEffect(() => {
+    const measureOffset = () => {
+      const parentEl = summaryRef.current?.offsetParent as HTMLElement | null;
+      const containerEl = containerRef.current;
+      if (!parentEl || !containerEl) {
+        setSummaryTopOffset(controlsHeight + CANVAS_VERTICAL_PADDING);
+        return;
+      }
+      const parentRect = parentEl.getBoundingClientRect();
+      const containerRect = containerEl.getBoundingClientRect();
+      const offset = containerRect.top - parentRect.top + CANVAS_VERTICAL_PADDING;
+      setSummaryTopOffset(offset);
+    };
+
+    const rafMeasure = () => { requestAnimationFrame(measureOffset); };
+
+    rafMeasure();
+
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(() => rafMeasure())
+      : null;
+    if (resizeObserver && containerRef.current) resizeObserver.observe(containerRef.current);
+    if (resizeObserver && controlsRef.current) resizeObserver.observe(controlsRef.current);
+
+    window.addEventListener('resize', rafMeasure);
+
+    return () => {
+      window.removeEventListener('resize', rafMeasure);
+      if (resizeObserver) resizeObserver.disconnect();
+    };
+  }, [controlsHeight, canvasSize.width, canvasSize.height, summaryWidth, summaryVisible]);
+
   const [showCoverage, setShowCoverage] = useState<boolean>(true);
   const [showRadiusBoundary, setShowRadiusBoundary] = useState<boolean>(true);
   // Always force coverage to be visible for debugging
@@ -305,10 +294,28 @@ export default function FloorplanCanvas({
   const [isDraggingAntenna, setIsDraggingAntenna] = useState<boolean>(false);
   const [isPlacingAntennas, setIsPlacingAntennas] = useState<boolean>(false); // Flag for auto-placement in progress
   const [antennaRange, setAntennaRange] = useState<number>(8); // Default 8m range for better coverage
-  const [antennaDensity, setAntennaDensity] = useState<number>(130); // Default density 130% (grid spacing percentage)
+  const [antennaDensity, setAntennaDensity] = useState<number>(65); // Grid spacing percent relative to diameter (65% ≈ 35% overlap)
   const [previewAntennas, setPreviewAntennas] = useState<Antenna[]>([]); // For live preview
+  const [placementMode, setPlacementMode] = useState<'coverage' | 'gap-first'>('gap-first');
+  const normalizedSpacingPercent = Math.max(50, Math.min(100, antennaDensity));
+  const overlapPercent = Math.round(100 - normalizedSpacingPercent);
+  const handleOverlapChange = useCallback((value: number) => {
+    if (!Number.isFinite(value)) return;
+    const clampedOverlap = Math.max(0, Math.min(50, value));
+    setAntennaDensity(100 - clampedOverlap);
+  }, []);
+  const computeCanvasToImageScale = useCallback(() => {
+    if (!image) return 1;
+    const scaleX = canvasSize.width > 0 ? image.width / canvasSize.width : 1;
+    const scaleY = canvasSize.height > 0 ? image.height / canvasSize.height : 1;
+    if (isFinite(scaleX) && scaleX > 0 && isFinite(scaleY) && scaleY > 0) {
+      return (scaleX + scaleY) / 2;
+    }
+    if (isFinite(scaleX) && scaleX > 0) return scaleX;
+    if (isFinite(scaleY) && scaleY > 0) return scaleY;
+    return 1;
+  }, [image, canvasSize.width, canvasSize.height]);
   // When true, changing the radius slider will only resize existing antenna circles (visual coverage) without re-placement.
-  const [lockPositions, setLockPositions] = useState<boolean>(true);
   // Track previous mode to react on mode change transitions
   const prevModeRef = useRef<typeof mode>(mode);
   useEffect(() => {
@@ -324,26 +331,37 @@ export default function FloorplanCanvas({
   const undoRef = useRef<() => void>();
   const redoRef = useRef<() => void>();
   const draggingVertexIdxRef = useRef<number | null>(null);
+  const coverageDiagKeyRef = useRef<string>('');
   const processedLoadedStateRef = useRef<any>(null);
 
   // Utility function to scale coordinates when loading saved state
-  const scaleCoordinates = useCallback((coords: any, fromImageDimensions: {width: number, height: number}, toImageDimensions: {width: number, height: number}): any => {
-    if (!coords || fromImageDimensions.width === 0 || fromImageDimensions.height === 0) return coords;
-    
-    const scaleX = toImageDimensions.width / fromImageDimensions.width;
-    const scaleY = toImageDimensions.height / fromImageDimensions.height;
-    
+  const scaleCoordinates = useCallback((coords: any, fromDimensions: {width: number, height: number}, toDimensions: {width: number, height: number}): any => {
+    if (!coords || fromDimensions.width === 0 || fromDimensions.height === 0) return coords;
+
+    const scaleX = toDimensions.width / fromDimensions.width;
+    const scaleY = toDimensions.height / fromDimensions.height;
+
     if (Array.isArray(coords)) {
       return coords.map(item => {
         if (item && typeof item === 'object' && 'x' in item && 'y' in item) {
-          return { ...item, x: item.x * scaleX, y: item.y * scaleY };
+          const scaled: any = { ...item, x: item.x * scaleX, y: item.y * scaleY };
+          if ('w' in item) scaled.w = (item as any).w * scaleX;
+          if ('h' in item) scaled.h = (item as any).h * scaleY;
+          if ('width' in item) scaled.width = (item as any).width * scaleX;
+          if ('height' in item) scaled.height = (item as any).height * scaleY;
+          return scaled;
         } else if (Array.isArray(item)) {
-          return scaleCoordinates(item, fromImageDimensions, toImageDimensions);
+          return scaleCoordinates(item, fromDimensions, toDimensions);
         }
         return item;
       });
     } else if (coords && typeof coords === 'object' && 'x' in coords && 'y' in coords) {
-      return { ...coords, x: coords.x * scaleX, y: coords.y * scaleY };
+      const scaled: any = { ...coords, x: (coords as any).x * scaleX, y: (coords as any).y * scaleY };
+      if ('w' in coords) scaled.w = (coords as any).w * scaleX;
+      if ('h' in coords) scaled.h = (coords as any).h * scaleY;
+      if ('width' in coords) scaled.width = (coords as any).width * scaleX;
+      if ('height' in coords) scaled.height = (coords as any).height * scaleY;
+      return scaled;
     } else if (coords && typeof coords === 'object') {
       const result: any = {};
       for (const [key, value] of Object.entries(coords)) {
@@ -351,7 +369,15 @@ export default function FloorplanCanvas({
           const v: any = value as any;
           result[key] = { ...v, x: (v.x as number) * scaleX, y: (v.y as number) * scaleY };
         } else if (typeof value === 'object') {
-          result[key] = scaleCoordinates(value, fromImageDimensions, toImageDimensions);
+          result[key] = scaleCoordinates(value, fromDimensions, toDimensions);
+        } else if ((key === 'x' || key.endsWith('X')) && typeof value === 'number') {
+          result[key] = value * scaleX;
+        } else if ((key === 'y' || key.endsWith('Y')) && typeof value === 'number') {
+          result[key] = value * scaleY;
+        } else if ((key === 'w' || key === 'width') && typeof value === 'number') {
+          result[key] = value * scaleX;
+        } else if ((key === 'h' || key === 'height') && typeof value === 'number') {
+          result[key] = value * scaleY;
         } else {
           result[key] = value;
         }
@@ -366,6 +392,7 @@ export default function FloorplanCanvas({
   const draggingTargetRef = useRef<'perimeter' | 'currentArea' | 'calArea' | 'hole' | null>(null);
   // Preserve view (zoom/pan) across image replacements (e.g., after Trim)
   const preserveViewRef = useRef<null | { compositeScale: number; centerImg: {x:number;y:number} }>(null);
+  const lastFitImageRef = useRef<string | null>(null);
   // Mandatory calibration gating
   const mustCalibrate = !scale;
 
@@ -415,12 +442,76 @@ export default function FloorplanCanvas({
       : `${m2.toFixed(2)} m²`;
   }, [displayUnit]);
 
+  const computeFittedCanvasSize = useCallback((baseWidth: number, baseHeight: number) => {
+    const safeWidth = Math.max(1, baseWidth);
+    const safeHeight = Math.max(1, baseHeight);
+
+    let availWidth = safeWidth;
+    let availHeight = safeHeight;
+
+    const container = containerRef.current;
+    const controlsEl = controlsRef.current;
+
+    const readPadding = (value?: string | null) => {
+      if (value == null) return 0;
+      const parsed = Number.parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    if (container) {
+      let paddingX = 0;
+      let paddingY = 0;
+      if (typeof window !== 'undefined' && window.getComputedStyle) {
+        const style = window.getComputedStyle(container);
+        paddingX = readPadding(style?.paddingLeft) + readPadding(style?.paddingRight);
+        paddingY = readPadding(style?.paddingTop) + readPadding(style?.paddingBottom);
+      }
+
+      const innerWidth = container.clientWidth - paddingX;
+      const innerHeight = container.clientHeight - paddingY;
+      if (innerWidth > 0) availWidth = innerWidth;
+      if (innerHeight > 0) availHeight = innerHeight;
+    } else if (typeof window !== 'undefined') {
+  const paddingAllowance = CANVAS_EDGE_MARGIN * 2; // symmetric edge margins
+  const summaryAllowance = summaryWidth ? summaryWidth + SUMMARY_GAP : 0;
+  availWidth = window.innerWidth - paddingAllowance - summaryAllowance;
+      const controlsHeightNow = controlsEl?.offsetHeight ?? controlsHeight ?? 0;
+      availHeight = window.innerHeight - controlsHeightNow - paddingAllowance;
+    }
+
+    if (!Number.isFinite(availWidth) || availWidth <= 0) availWidth = safeWidth;
+    if (!Number.isFinite(availHeight) || availHeight <= 0) availHeight = safeHeight;
+
+    const scale = Math.min(availWidth / safeWidth, availHeight / safeHeight, 1);
+    return {
+      width: Math.max(1, Math.round(safeWidth * scale)),
+      height: Math.max(1, Math.round(safeHeight * scale)),
+    };
+  }, [controlsHeight, summaryWidth]);
+
+  useEffect(() => {
+    if (!image) return;
+    const savedWidth = loadedCanvasState?.canvasWidth ?? 0;
+    const savedHeight = loadedCanvasState?.canvasHeight ?? 0;
+    const baseWidth = savedWidth > 0 ? savedWidth : image.width;
+    const baseHeight = savedHeight > 0 ? savedHeight : image.height;
+    if (!baseWidth || !baseHeight) return;
+    setCanvasSize(prev => {
+      const fitted = computeFittedCanvasSize(baseWidth, baseHeight);
+      if (Math.abs(prev.width - fitted.width) < 2 && Math.abs(prev.height - fitted.height) < 2) {
+        return prev;
+      }
+      return fitted;
+    });
+  }, [controlsHeight, image, loadedCanvasState, computeFittedCanvasSize]);
+
   // Load image when imageUrl changes
   useEffect(() => {
     console.log('FloorplanCanvas: Loading image from URL:', imageUrl);
     if (!imageUrl) {
       setImage(null);
       setImageLoaded(false);
+      setScaleMetadata(null);
       return;
     }
 
@@ -443,24 +534,19 @@ export default function FloorplanCanvas({
         console.log('FloorplanCanvas: Image loaded successfully', { width: img.width, height: img.height });
         setImage(img);
 
-        // If loadedCanvasState has a saved canvas size, use it for display
-        if (loadedCanvasState && loadedCanvasState.canvasWidth && loadedCanvasState.canvasHeight) {
-          setCanvasSize({ width: loadedCanvasState.canvasWidth, height: loadedCanvasState.canvasHeight });
-          setImageLoaded(true);
-        } else {
-          // Calculate display size to fit available container width while preserving aspect ratio (avoid height-driven jitter)
-          const container = containerRef.current;
-          if (!container) return;
-          const availW = container.clientWidth || window.innerWidth;
-          const scale = Math.min(availW / img.width, 1);
-          const displayWidth = Math.max(1, Math.floor(img.width * scale));
-          const displayHeight = Math.max(1, Math.floor(img.height * scale));
-          setCanvasSize(prev => {
-            if (Math.abs((prev?.width||0) - displayWidth) < 2 && Math.abs((prev?.height||0) - displayHeight) < 2) return prev;
-            return { width: displayWidth, height: displayHeight };
-          });
-          setImageLoaded(true);
-        }
+  const savedCanvasWidth = loadedCanvasState?.canvasWidth ?? 0;
+  const savedCanvasHeight = loadedCanvasState?.canvasHeight ?? 0;
+  const hasSavedCanvasSize = savedCanvasWidth > 0 && savedCanvasHeight > 0;
+  const baseWidth = hasSavedCanvasSize ? savedCanvasWidth : img.width;
+  const baseHeight = hasSavedCanvasSize ? savedCanvasHeight : img.height;
+        const fittedSize = computeFittedCanvasSize(baseWidth, baseHeight);
+        setCanvasSize(prev => {
+          if (Math.abs((prev?.width || 0) - fittedSize.width) < 2 && Math.abs((prev?.height || 0) - fittedSize.height) < 2) {
+            return prev;
+          }
+          return fittedSize;
+        });
+        setImageLoaded(true);
       };
       
       img.onerror = (error) => {
@@ -499,7 +585,7 @@ export default function FloorplanCanvas({
     };
 
     loadImage();
-  }, [imageUrl]);
+  }, [imageUrl, loadedCanvasState, computeFittedCanvasSize]);
 
   // Scroll to top and notify parent when ready
   useEffect(() => {
@@ -513,37 +599,29 @@ export default function FloorplanCanvas({
   useEffect(() => {
     if (!image) return;
     const recalc = () => {
-      const container = containerRef.current;
-      if (!container) return;
-      // If we loaded a project with saved canvas size, keep that size
-      if (loadedCanvasState?.canvasWidth && loadedCanvasState?.canvasHeight) {
-        setCanvasSize(prev => {
-          const displayWidth = loadedCanvasState.canvasWidth as number;
-          const displayHeight = loadedCanvasState.canvasHeight as number;
-          if (Math.abs((prev?.width||0) - displayWidth) < 2 && Math.abs((prev?.height||0) - displayHeight) < 2) return prev;
-          return { width: displayWidth, height: displayHeight };
-        });
-        return;
-      }
-      const availW = container.clientWidth || window.innerWidth;
-      const scaleFit = Math.min(availW / image.width, 1);
-      const displayWidth = Math.max(1, Math.floor(image.width * scaleFit));
-      const displayHeight = Math.max(1, Math.floor(image.height * scaleFit));
+      const savedWidth = loadedCanvasState?.canvasWidth ?? 0;
+      const savedHeight = loadedCanvasState?.canvasHeight ?? 0;
+      const baseWidth = savedWidth > 0 ? savedWidth : image.width;
+      const baseHeight = savedHeight > 0 ? savedHeight : image.height;
+      if (!baseWidth || !baseHeight) return;
       setCanvasSize(prev => {
-        if (Math.abs((prev?.width||0) - displayWidth) < 2 && Math.abs((prev?.height||0) - displayHeight) < 2) return prev;
-        return { width: displayWidth, height: displayHeight };
+        const fitted = computeFittedCanvasSize(baseWidth, baseHeight);
+        if (Math.abs((prev?.width || 0) - fitted.width) < 2 && Math.abs((prev?.height || 0) - fitted.height) < 2) {
+          return prev;
+        }
+        return fitted;
       });
     };
     recalc();
-    const ro = new ResizeObserver(() => recalc());
-    if (containerRef.current) ro.observe(containerRef.current);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => recalc()) : null;
+    if (ro && containerRef.current) ro.observe(containerRef.current);
     const onWin = () => recalc();
     window.addEventListener('resize', onWin);
     return () => {
-      ro.disconnect();
+      if (ro) ro.disconnect();
       window.removeEventListener('resize', onWin);
     };
-  }, [image]);
+  }, [image, loadedCanvasState, computeFittedCanvasSize]);
   // Keep drawings aligned if canvas size changes (e.g., entering fullscreen or UI overlays)
   const prevSizeRef = useRef<{width:number;height:number}>({ width: 0, height: 0 });
   useEffect(() => {
@@ -606,6 +684,15 @@ export default function FloorplanCanvas({
     }
   }, [imageLoaded, image, canvasSize, areas, currentArea, mode, calibrationPoints, calibrationAreaPoints, holes, excludeCurrent, autoHolesPreview, zoom, pan, roi, perimeter, antennas, previewAntennas, showCoverage, showRadiusBoundary, antennaRange]);
 
+  useEffect(() => {
+    if (!imageLoaded || !image) return;
+    const key = image.src;
+    if (lastFitImageRef.current === key) return;
+    lastFitImageRef.current = key;
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [imageLoaded, image]);
+
   // Show the calibration chooser overlay until the user explicitly picks a mode
   // (Avoid auto-switching to 'calibrate' which could make the overlay flash briefly.)
   useEffect(() => {
@@ -643,6 +730,7 @@ export default function FloorplanCanvas({
       showCoverage,
       showRadiusBoundary,
       antennaRange,
+  scaleMetadata,
       calibrationPoints,
       calibrationAreaPoints,
       calibrationAreaReal,
@@ -669,7 +757,7 @@ export default function FloorplanCanvas({
       originalImageHeight: image?.height || 0,
     };
     try { onStateChange(currentState); } catch {}
-  }, [onStateChange, antennas, areas, scale, scaleUnit, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, autoHolesPreview, autoHolesIndex, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions, zoom, pan, canvasSize.width, canvasSize.height, image]);
+  }, [onStateChange, antennas, areas, scale, scaleUnit, scaleMetadata, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, autoHolesPreview, autoHolesIndex, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions, zoom, pan, canvasSize.width, canvasSize.height, image]);
 
   const drawCanvas = () => {
     if (!image || !imageLoaded) return;
@@ -1634,6 +1722,7 @@ export default function FloorplanCanvas({
     setCalibrationPoints([]);
     setCalibrationAreaPoints([]);
     setCalibrationAreaReal('');
+    setScaleMetadata(null);
     setPerimeter(null);
     setPerimeterRaw(null);
     setPerimeterConfidence(null);
@@ -1662,6 +1751,7 @@ export default function FloorplanCanvas({
       calibrationPoints: calibrationPoints.map(p=>({...p})),
       calibrationAreaPoints: calibrationAreaPoints.map(p=>({...p})),
       calibrationAreaReal,
+  scaleMetadata: scaleMetadata ? { ...scaleMetadata } : null,
       perimeter: perimeter ? perimeter.map(p=>({...p})) : null,
       perimeterRaw: perimeterRaw ? perimeterRaw.map(p=>({...p})) : null,
       holes: holes.map(h => h.map(p=>({...p}))),
@@ -1702,6 +1792,7 @@ export default function FloorplanCanvas({
       calibrationPoints: calibrationPoints.map(p=>({...p})),
       calibrationAreaPoints: calibrationAreaPoints.map(p=>({...p})),
       calibrationAreaReal,
+  scaleMetadata: scaleMetadata ? { ...scaleMetadata } : null,
       perimeter: perimeter ? perimeter.map(p=>({...p})) : null,
       perimeterRaw: perimeterRaw ? perimeterRaw.map(p=>({...p})) : null,
       holes: holes.map(h => h.map(p=>({...p}))),
@@ -1750,12 +1841,13 @@ export default function FloorplanCanvas({
     setSelections(last.selections);
     setSavedAreas(last.savedAreas);
     setSavedExclusions(last.savedExclusions);
+  setScaleMetadata(last.scaleMetadata || null);
   };
 
   // Update undo ref when function changes
   useEffect(() => {
     undoRef.current = undo;
-  }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions]);
+  }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, scaleMetadata, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions]);
 
   const redo = () => {
     console.log('Redo function called');
@@ -1774,6 +1866,7 @@ export default function FloorplanCanvas({
       calibrationPoints: calibrationPoints.map(p=>({...p})),
       calibrationAreaPoints: calibrationAreaPoints.map(p=>({...p})),
       calibrationAreaReal,
+  scaleMetadata: scaleMetadata ? { ...scaleMetadata } : null,
       perimeter: perimeter ? perimeter.map(p=>({...p})) : null,
       perimeterRaw: perimeterRaw ? perimeterRaw.map(p=>({...p})) : null,
       holes: holes.map(h => h.map(p=>({...p}))),
@@ -1822,12 +1915,13 @@ export default function FloorplanCanvas({
     setSelections(next.selections);
     setSavedAreas(next.savedAreas);
     setSavedExclusions(next.savedExclusions);
+  setScaleMetadata(next.scaleMetadata || null);
   };
 
   // Update redo ref when function changes
   useEffect(() => {
     redoRef.current = redo;
-  }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions]);
+  }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, scaleMetadata, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions]);
 
   // Restore loaded canvas state with coordinate scaling
   useEffect(() => {
@@ -1836,46 +1930,86 @@ export default function FloorplanCanvas({
     // Prevent infinite loops by checking if we've already processed this state
     if (processedLoadedStateRef.current === loadedCanvasState) return;
     processedLoadedStateRef.current = loadedCanvasState;
+  coverageDiagKeyRef.current = '';
     
     // Use saved canvas size for display if available
     const savedImageDimensions = {
-      width: loadedCanvasState.originalImageWidth || loadedCanvasState.canvasWidth || 0,
-      height: loadedCanvasState.originalImageHeight || loadedCanvasState.canvasHeight || 0
+      width: loadedCanvasState.scaleMetadata?.imageWidth
+        || loadedCanvasState.originalImageWidth
+        || loadedCanvasState.canvasWidth
+        || image.width,
+      height: loadedCanvasState.scaleMetadata?.imageHeight
+        || loadedCanvasState.originalImageHeight
+        || loadedCanvasState.canvasHeight
+        || image.height,
     };
+
+    const savedCanvasDimensions = {
+      width: loadedCanvasState.scaleMetadata?.canvasWidth
+        || loadedCanvasState.canvasWidth
+        || savedImageDimensions.width,
+      height: loadedCanvasState.scaleMetadata?.canvasHeight
+        || loadedCanvasState.canvasHeight
+        || savedImageDimensions.height,
+    };
+
+    const baseCanvasWidth = savedCanvasDimensions.width || savedImageDimensions.width || image.width;
+    const baseCanvasHeight = savedCanvasDimensions.height || savedImageDimensions.height || image.height;
+    const fittedCanvasSize = computeFittedCanvasSize(baseCanvasWidth, baseCanvasHeight);
+    const targetCanvasDimensions = {
+      width: fittedCanvasSize.width,
+      height: fittedCanvasSize.height,
+    };
+
+    setScaleMetadata(loadedCanvasState.scaleMetadata ?? null);
 
     // If saved canvas size is available, force display size to match
-    if (loadedCanvasState.canvasWidth && loadedCanvasState.canvasHeight) {
-      setCanvasSize(prev => {
-        const newWidth = loadedCanvasState.canvasWidth;
-        const newHeight = loadedCanvasState.canvasHeight;
-        // Only update if there's a significant difference to prevent infinite loops
-        if (Math.abs(prev.width - newWidth) < 2 && Math.abs(prev.height - newHeight) < 2) {
-          return prev;
-        }
-        return { width: newWidth, height: newHeight };
-      });
-    }
+    setCanvasSize(prev => {
+      if (Math.abs(prev.width - targetCanvasDimensions.width) < 2 && Math.abs(prev.height - targetCanvasDimensions.height) < 2) {
+        return prev;
+      }
+      return targetCanvasDimensions;
+    });
+
+    const fromCanvasDimensions = {
+      width: savedCanvasDimensions.width || targetCanvasDimensions.width,
+      height: savedCanvasDimensions.height || targetCanvasDimensions.height,
+    };
+    const canvasScalingNeeded = fromCanvasDimensions.width > 0 && fromCanvasDimensions.height > 0 && (
+      Math.abs(fromCanvasDimensions.width - targetCanvasDimensions.width) > 0.5 ||
+      Math.abs(fromCanvasDimensions.height - targetCanvasDimensions.height) > 0.5
+    );
+    const scaleForCanvas = canvasScalingNeeded
+      ? (coords: any) => scaleCoordinates(coords, fromCanvasDimensions, targetCanvasDimensions)
+      : (coords: any) => coords;
 
     const currentImageDimensions = {
-      width: image.width,
-      height: image.height
+      width: image.width || savedImageDimensions.width,
+      height: image.height || savedImageDimensions.height
     };
-    
-    // Only scale if dimensions are different
-    const needsScaling = savedImageDimensions.width !== currentImageDimensions.width || 
-                        savedImageDimensions.height !== currentImageDimensions.height;
+
+    const safeSavedWidth = savedImageDimensions.width || currentImageDimensions.width || 1;
+    const safeSavedHeight = savedImageDimensions.height || currentImageDimensions.height || 1;
+    const ratioX = currentImageDimensions.width && safeSavedWidth
+      ? currentImageDimensions.width / safeSavedWidth
+      : 1;
+    const ratioY = currentImageDimensions.height && safeSavedHeight
+      ? currentImageDimensions.height / safeSavedHeight
+      : 1;
+
+    // Only scale if dimensions are different (allow small tolerance)
+    const needsScaling = Math.abs(safeSavedWidth - currentImageDimensions.width) > 0.5 || 
+                        Math.abs(safeSavedHeight - currentImageDimensions.height) > 0.5;
     
     console.log('Restoring canvas state:', {
       savedDimensions: savedImageDimensions,
       currentDimensions: currentImageDimensions,
-      needsScaling
+      needsScaling,
+      ratioX,
+      ratioY,
+      scaleMetadata: loadedCanvasState.scaleMetadata || null,
     });
     
-    // Restore all the state, scaling coordinates if needed
-    const scaleIfNeeded = needsScaling ? 
-      (coords: any) => scaleCoordinates(coords, savedImageDimensions, currentImageDimensions) : 
-      (coords: any) => coords;
-
     // Reset baseline values so floors don't inherit previous state
     historyRef.current = [];
     redoHistoryRef.current = [];
@@ -1886,8 +2020,8 @@ export default function FloorplanCanvas({
     setSelectedAntennaId(null);
     setIsDraggingAntenna(false);
     setIsPlacingAntennas(false);
-  setLockPositions(true);
-  setAntennaDensity(130);
+  setAntennaDensity(65);
+  setPlacementMode('gap-first');
     setAreas([]);
     setCurrentArea([]);
     setCalibrationPoints([]);
@@ -1919,64 +2053,78 @@ export default function FloorplanCanvas({
     setZoom(1);
     setPan({ x: 0, y: 0 });
 
-    if (loadedCanvasState.antennas) setAntennas(scaleIfNeeded(loadedCanvasState.antennas));
-    if (loadedCanvasState.areas) setAreas(scaleIfNeeded(loadedCanvasState.areas));
+  if (loadedCanvasState.antennas) setAntennas(scaleForCanvas(loadedCanvasState.antennas));
+  if (loadedCanvasState.areas) setAreas(scaleForCanvas(loadedCanvasState.areas));
   if (loadedCanvasState.showCoverage !== undefined) setShowCoverage(!!loadedCanvasState.showCoverage);
   if (loadedCanvasState.showRadiusBoundary !== undefined) setShowRadiusBoundary(!!loadedCanvasState.showRadiusBoundary);
   if (loadedCanvasState.antennaRange !== undefined && typeof loadedCanvasState.antennaRange === 'number') setAntennaRange(loadedCanvasState.antennaRange);
-    if (loadedCanvasState.calibrationPoints) setCalibrationPoints(scaleIfNeeded(loadedCanvasState.calibrationPoints));
-    if (loadedCanvasState.calibrationAreaPoints) setCalibrationAreaPoints(scaleIfNeeded(loadedCanvasState.calibrationAreaPoints));
+  if (loadedCanvasState.calibrationPoints) setCalibrationPoints(scaleForCanvas(loadedCanvasState.calibrationPoints));
+  if (loadedCanvasState.calibrationAreaPoints) setCalibrationAreaPoints(scaleForCanvas(loadedCanvasState.calibrationAreaPoints));
     if (loadedCanvasState.calibrationAreaReal !== undefined) setCalibrationAreaReal(loadedCanvasState.calibrationAreaReal);
-    if (loadedCanvasState.perimeter) setPerimeter(scaleIfNeeded(loadedCanvasState.perimeter));
-    if (loadedCanvasState.perimeterRaw) setPerimeterRaw(scaleIfNeeded(loadedCanvasState.perimeterRaw));
-    if (loadedCanvasState.holes) setHoles(scaleIfNeeded(loadedCanvasState.holes));
-    if (loadedCanvasState.objects) setObjects(scaleIfNeeded(loadedCanvasState.objects));
-    if (loadedCanvasState.autoHolesPreview) setAutoHolesPreview(scaleIfNeeded(loadedCanvasState.autoHolesPreview));
+  if (loadedCanvasState.perimeter) setPerimeter(scaleForCanvas(loadedCanvasState.perimeter));
+  if (loadedCanvasState.perimeterRaw) setPerimeterRaw(scaleForCanvas(loadedCanvasState.perimeterRaw));
+  if (loadedCanvasState.holes) setHoles(scaleForCanvas(loadedCanvasState.holes));
+  if (loadedCanvasState.objects) setObjects(scaleForCanvas(loadedCanvasState.objects));
+  if (loadedCanvasState.autoHolesPreview) setAutoHolesPreview(scaleForCanvas(loadedCanvasState.autoHolesPreview));
     if (loadedCanvasState.autoHolesIndex !== undefined) setAutoHolesIndex(loadedCanvasState.autoHolesIndex);
-    if (loadedCanvasState.excludeCurrent) setExcludeCurrent(scaleIfNeeded(loadedCanvasState.excludeCurrent));
-    if (loadedCanvasState.roi) setRoi(scaleIfNeeded(loadedCanvasState.roi));
+  if (loadedCanvasState.excludeCurrent) setExcludeCurrent(scaleForCanvas(loadedCanvasState.excludeCurrent));
+  if (loadedCanvasState.roi) setRoi(scaleForCanvas(loadedCanvasState.roi));
     if (loadedCanvasState.mode) setMode(loadedCanvasState.mode);
-    if (loadedCanvasState.manualRegions) setManualRegions(scaleIfNeeded(loadedCanvasState.manualRegions));
-    if (loadedCanvasState.manualHoles) setManualHoles(scaleIfNeeded(loadedCanvasState.manualHoles));
+  if (loadedCanvasState.manualRegions) setManualRegions(scaleForCanvas(loadedCanvasState.manualRegions));
+  if (loadedCanvasState.manualHoles) setManualHoles(scaleForCanvas(loadedCanvasState.manualHoles));
     if (loadedCanvasState.manualResult !== undefined) setManualResult(loadedCanvasState.manualResult);
     if (loadedCanvasState.selections) setSelections(loadedCanvasState.selections);
-    if (loadedCanvasState.savedAreas) setSavedAreas(scaleIfNeeded(loadedCanvasState.savedAreas));
-    if (loadedCanvasState.savedExclusions) setSavedExclusions(scaleIfNeeded(loadedCanvasState.savedExclusions));
+  if (loadedCanvasState.savedAreas) setSavedAreas(scaleForCanvas(loadedCanvasState.savedAreas));
+  if (loadedCanvasState.savedExclusions) setSavedExclusions(scaleForCanvas(loadedCanvasState.savedExclusions));
 
     // Restore scale value for antenna circles and calibration
-    if (loadedCanvasState.scale !== undefined && loadedCanvasState.scale !== null) {
-      if (typeof loadedCanvasState.scale === 'number') {
-        // If scaling needed, scale the value proportionally
-        if (needsScaling) {
-          const scaleRatio = (savedImageDimensions.width / currentImageDimensions.width + savedImageDimensions.height / currentImageDimensions.height) / 2;
-          onScaleDetected && onScaleDetected(loadedCanvasState.scale * scaleRatio, scaleUnit, 'restored', 1.0);
-        } else {
-          onScaleDetected && onScaleDetected(loadedCanvasState.scale, scaleUnit, 'restored', 1.0);
+    const storedScale = typeof loadedCanvasState.scale === 'number' ? loadedCanvasState.scale : null;
+    const metadata = loadedCanvasState.scaleMetadata ?? null;
+    let appliedScale: number | null = null;
+
+    const linearScale = (ratioX + ratioY) / 2 || 1;
+    const areaScale = ratioX * ratioY || 1;
+
+    if (metadata) {
+      if (metadata.mode === 'distance' && metadata.pixelValue > 0 && metadata.realMeters) {
+        const adjustedPixelDistance = metadata.pixelValue * linearScale;
+        if (adjustedPixelDistance > 0) {
+          appliedScale = metadata.realMeters / adjustedPixelDistance;
+        }
+      } else if (metadata.mode === 'area' && metadata.pixelValue > 0 && metadata.realSquareMeters) {
+        const adjustedPixelArea = metadata.pixelValue * areaScale;
+        if (adjustedPixelArea > 0) {
+          appliedScale = Math.sqrt(metadata.realSquareMeters / adjustedPixelArea);
         }
       }
     }
 
-    // Restore zoom and pan, scaling if needed
-    if (loadedCanvasState.zoom !== undefined) {
-      if (needsScaling && typeof loadedCanvasState.zoom === 'number') {
-        // Scale zoom proportionally to image size change (average of X/Y)
-        const zoomScale = ((currentImageDimensions.width / savedImageDimensions.width) + (currentImageDimensions.height / savedImageDimensions.height)) / 2;
-        setZoom(loadedCanvasState.zoom * zoomScale);
+    if (appliedScale === null && storedScale !== null) {
+      if (needsScaling && ratioX > 0 && ratioY > 0) {
+        const inverseLinear = (safeSavedWidth / currentImageDimensions.width + safeSavedHeight / currentImageDimensions.height) / 2;
+        appliedScale = storedScale * inverseLinear;
       } else {
-        setZoom(loadedCanvasState.zoom);
+        appliedScale = storedScale;
       }
     }
-    if (loadedCanvasState.pan !== undefined) {
-      if (needsScaling && loadedCanvasState.pan && typeof loadedCanvasState.pan.x === 'number' && typeof loadedCanvasState.pan.y === 'number') {
-        setPan({
-          x: loadedCanvasState.pan.x * (currentImageDimensions.width / savedImageDimensions.width),
-          y: loadedCanvasState.pan.y * (currentImageDimensions.height / savedImageDimensions.height)
-        });
-      } else {
-        setPan(loadedCanvasState.pan);
-      }
+
+    if (appliedScale !== null && isFinite(appliedScale) && appliedScale > 0) {
+      console.log('SCALE LOAD DIAG', {
+        storedScale,
+        appliedScale,
+        metadata,
+        ratioX,
+        ratioY,
+        radiusMeters: antennaRange,
+        radiusPixels: antennaRange / appliedScale,
+      });
+      onScaleDetected && onScaleDetected(appliedScale, scaleUnit, 'restored', 1.0);
     }
-  }, [loadedCanvasState, image, scaleUnit]);
+
+    // Always start from a fitted view; zoom/pan will be reset once the image renders
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [loadedCanvasState, image, scaleUnit, computeFittedCanvasSize]);
 
   const calibrationDistancePx = () => {
     if (calibrationPoints.length < 2 || !image) return 0;
@@ -1996,8 +2144,21 @@ export default function FloorplanCanvas({
       alert('Select two points and enter a valid distance.');
       return;
     }
-    const unitsPerPixel = real / px; // in selected units per pixel
-    const metersPerPixel = unitsPerPixel * unitToMetersFactor(calibrationUnit);
+    const unitFactor = unitToMetersFactor(calibrationUnit);
+    const realMeters = real * unitFactor;
+    const metersPerPixel = realMeters / px;
+    setScaleMetadata({
+      mode: 'distance',
+      pixelValue: px,
+      realMeters,
+      imageWidth: image?.width || canvasSize.width,
+      imageHeight: image?.height || canvasSize.height,
+      canvasWidth: canvasSize.width,
+      canvasHeight: canvasSize.height,
+      unitLabel: calibrationUnit,
+      capturedAtIso: new Date().toISOString(),
+    });
+    coverageDiagKeyRef.current = '';
     onCalibrate && onCalibrate(metersPerPixel, calibrationUnit);
     setCalibrationPoints([]);
     setCalibrationReal('');
@@ -2030,14 +2191,63 @@ export default function FloorplanCanvas({
     const pxArea = areaPixels(calibrationAreaPoints);
     if (!pxArea || !isFinite(pxArea)) { alert('Invalid pixel area.'); return; }
   // If A_real = (unitsPerPixel^2) * A_pixels => unitsPerPixel = sqrt(A_real / A_pixels)
-    const unitsPerPixel = Math.sqrt(realArea / pxArea); // in selected units per pixel
-    if (!isFinite(unitsPerPixel) || unitsPerPixel <= 0) { alert('Failed to compute scale from area.'); return; }
-    const metersPerPixel = unitsPerPixel * unitToMetersFactor(calibrationUnit);
+    const unitFactor = unitToMetersFactor(calibrationUnit);
+    const realAreaMeters = realArea * unitFactor * unitFactor;
+    const metersPerPixel = Math.sqrt(realAreaMeters / pxArea);
+    if (!isFinite(metersPerPixel) || metersPerPixel <= 0) { alert('Failed to compute scale from area.'); return; }
+    setScaleMetadata({
+      mode: 'area',
+      pixelValue: pxArea,
+      realSquareMeters: realAreaMeters,
+      imageWidth: image?.width || canvasSize.width,
+      imageHeight: image?.height || canvasSize.height,
+      canvasWidth: canvasSize.width,
+      canvasHeight: canvasSize.height,
+      unitLabel: calibrationUnit,
+      capturedAtIso: new Date().toISOString(),
+    });
+    coverageDiagKeyRef.current = '';
     onCalibrate && onCalibrate(metersPerPixel, calibrationUnit);
     setCalibrationAreaPoints([]);
     setCalibrationAreaReal('');
     setMode('select');
   };
+
+  useEffect(() => {
+    if (!scale || !image) return;
+    if (!isFinite(scale) || scale <= 0) return;
+    const referencePolygon = perimeter && perimeter.length >= 3
+      ? perimeter
+      : (savedAreas.length > 0 && savedAreas[0].length >= 3 ? savedAreas[0] : null);
+    const polygonAreaPx = referencePolygon ? areaPixels(referencePolygon) : null;
+    const key = [
+      scale.toFixed(8),
+      antennaRange?.toFixed(4) ?? 'na',
+      image.width,
+      image.height,
+      canvasSize.width,
+      canvasSize.height,
+      referencePolygon ? referencePolygon.length : 0,
+      polygonAreaPx ? polygonAreaPx.toFixed(2) : 'na',
+      scaleMetadata?.capturedAtIso ?? 'na',
+    ].join('|');
+    if (coverageDiagKeyRef.current === key) return;
+    coverageDiagKeyRef.current = key;
+    const polygonAreaMeters = polygonAreaPx && scale ? polygonAreaPx * scale * scale : null;
+    console.log('COVERAGE_DIAG', {
+      stage: 'post-load',
+      scaleMetersPerPixel: scale,
+      radiusMeters: antennaRange,
+      radiusPixels: scale ? antennaRange / scale : null,
+      polygonAreaPx,
+      polygonAreaSqMeters: polygonAreaMeters,
+      imageWidth: image.width,
+      imageHeight: image.height,
+      canvasWidth: canvasSize.width,
+      canvasHeight: canvasSize.height,
+      scaleMetadata,
+    });
+  }, [scale, antennaRange, image, canvasSize.width, canvasSize.height, perimeter, savedAreas, scaleMetadata]);
 
   // Zoom with wheel
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -2367,6 +2577,7 @@ export default function FloorplanCanvas({
     
     setIsPlacingAntennas(true);
     console.log('🟦 AUTO PLACE: Starting antenna placement...');
+  console.log('🟦 AUTO PLACE: spacing percent =', normalizedSpacingPercent, 'overlap ≈', overlapPercent, '%', 'mode =', placementMode);
     console.log('🟦 AUTO PLACE: savedAreas =', savedAreas.length, savedAreas);
     console.log('🟦 AUTO PLACE: holes =', holes.length, holes);
     console.log('🟦 AUTO PLACE: manualHoles =', manualHoles.length, manualHoles);
@@ -2384,17 +2595,23 @@ export default function FloorplanCanvas({
       if (perimeter && perimeter.length >=3) activeAreas = [perimeter];
       else if (savedAreas.length) activeAreas = savedAreas;
       else if (currentArea.length >=3) activeAreas = [currentArea];
-      const newAntennas = generateFullCoverageAntennas({
-        areas: activeAreas,
+
+      const exclusions = [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview];
+      const canvasToImageScale = computeCanvasToImageScale();
+      const newAntennas = simpleAutoPlaceAntennas({
+        savedAreas: activeAreas,
         scale,
-        rangeMeters: antennaRange,
-        power: 50,
+        defaultAntennaRange: antennaRange,
+        defaultAntennaPower: 50,
         isPointInPolygon,
-        exclusions: [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview]
+        exclusions,
+        gridSpacingPercent: normalizedSpacingPercent,
+        canvasToImageScale,
+        placementMode
       });
-      
+
       setAntennas(newAntennas);
-      console.log(`Placed ${newAntennas.length} antennas`);
+      console.log(`Placed ${newAntennas.length} antennas using buffered solver`);
     } catch (error) {
       console.error('Error placing antennas:', error);
       alert('Error placing antennas. Please try again.');
@@ -2448,16 +2665,20 @@ export default function FloorplanCanvas({
     }
 
     try {
-      console.log('🔵 PREVIEW: Generating preview (full coverage algorithm)');
-      const previewAntennas = generateFullCoverageAntennas({
-        areas: areasToUse,
+      console.log('🔵 PREVIEW: Generating preview (buffer-aware solver)');
+      const canvasToImageScale = computeCanvasToImageScale();
+      const previewAntennas = simpleAutoPlaceAntennas({
+        savedAreas: areasToUse,
         scale,
-        rangeMeters: antennaRange,
-        power: 50,
+        defaultAntennaRange: antennaRange,
+        defaultAntennaPower: 50,
         isPointInPolygon,
-        exclusions: [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview]
+        exclusions: [...holes, ...manualHoles, ...savedExclusions, ...autoHolesPreview],
+        gridSpacingPercent: normalizedSpacingPercent,
+        canvasToImageScale,
+        placementMode
       });
-      
+
       console.log('🔵 PREVIEW: Generated', previewAntennas.length, 'preview antennas');
       setPreviewAntennas(previewAntennas);
     } catch (error) {
@@ -2713,7 +2934,7 @@ export default function FloorplanCanvas({
     setCalibrationAreaReal('');
   }, [requestCalibrateToken]);
 
-  // Global shortcuts: Ctrl/Cmd+Z undo, Ctrl+Y/Ctrl+Shift+Z redo, M toggle Measure/Select
+  // Global shortcuts: Ctrl/Cmd+Z undo, Ctrl+Y/Ctrl+Shift+Z redo
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const key = e.key?.toLowerCase?.() || '';
@@ -2727,19 +2948,6 @@ export default function FloorplanCanvas({
         e.preventDefault(); 
         console.log('Redo shortcut pressed - calling redo via ref');
         redoRef.current?.(); 
-        return; 
-      }
-      if (key === 'm') {
-        e.preventDefault();
-        if (mustCalibrate) { setMode('calibrate'); return; }
-        setMode(prev => {
-          if (prev === 'measure') {
-            // Turning off Measure: clear path lines
-            setCurrentArea([]);
-            return 'select';
-          }
-          return 'measure';
-        });
         return;
       }
     };
@@ -2899,8 +3107,9 @@ export default function FloorplanCanvas({
   const content = (
     <div className="flex flex-col relative h-full min-h-0">
       {/* Controls */}
-      <div className="bg-gradient-to-r from-blue-500 to-orange-500 px-6 py-4 flex justify-between items-center flex-wrap gap-3">
-        <div className="flex items-center space-x-3">
+  <div ref={controlsRef} className="bg-gradient-to-r from-blue-500 to-orange-500 px-6 py-4 flex flex-col gap-3">
+        <div className="flex w-full flex-wrap items-start gap-3">
+          <div className="flex flex-wrap items-center gap-3 flex-1 min-w-0">
           <button type="button"
             onClick={() => { if (mustCalibrate) { setMode('calibrate'); return; } setMode('select'); }}
             disabled={mustCalibrate}
@@ -2929,9 +3138,9 @@ export default function FloorplanCanvas({
                 ? 'bg-white text-blue-600 shadow-sm' 
                 : 'bg-white/20 text-white hover:bg-white/30'
             }`}
-            title="Measure Distance (multi-segment path)"
+            title="Measure path (multi-segment)"
           >
-            Measure Distance
+            Measure
           </button>
           <button type="button"
             onClick={() => {
@@ -2977,23 +3186,26 @@ export default function FloorplanCanvas({
             onClick={clearAll}
             className="bg-red-500 text-white px-4 py-2 rounded-lg font-medium hover:bg-red-600 transition-all transform hover:scale-105 shadow-sm"
           >
-            Clear All
+            Clear Selection
           </button>
           {/* Calibration entry points */}
-          <button type="button"
-            onClick={() => { setMode('calibrate'); setCalibrationPoints([]); setCalibrationReal(''); }}
-            className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 ${mode==='calibrate' ? 'bg-white text-orange-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'}`}
-            title="Calibrate by known distance"
-          >
-            Calibrate Distance
-          </button>
-          <button type="button"
-            onClick={() => { setMode('calibrate-area'); setCalibrationAreaPoints([]); setCalibrationAreaReal(''); }}
-            className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 ${mode==='calibrate-area' ? 'bg-white text-orange-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'}`}
-            title="Calibrate by known area"
-          >
-            Calibrate Area
-          </button>
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white">
+            <span className="text-sm font-medium">Calibrate</span>
+            <button type="button"
+              onClick={() => { setMode('calibrate'); setCalibrationPoints([]); setCalibrationReal(''); }}
+              className={`px-3 py-1.5 rounded-md font-medium transition-all transform hover:scale-105 ${mode==='calibrate' ? 'bg-white text-orange-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'}`}
+              title="Calibrate by known distance"
+            >
+              Distance
+            </button>
+            <button type="button"
+              onClick={() => { setMode('calibrate-area'); setCalibrationAreaPoints([]); setCalibrationAreaReal(''); }}
+              className={`px-3 py-1.5 rounded-md font-medium transition-all transform hover:scale-105 ${mode==='calibrate-area' ? 'bg-white text-orange-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'}`}
+              title="Calibrate by known area"
+            >
+              Area
+            </button>
+          </div>
           <button type="button"
             onClick={undo}
             className="bg-white/20 text-white px-4 py-2 rounded-lg font-medium hover:bg-white/30 transition-all transform hover:scale-105 shadow-sm disabled:opacity-50"
@@ -3080,24 +3292,69 @@ export default function FloorplanCanvas({
               >
                 Reset
               </button>
+          </div>
+          <div className="flex items-center gap-2 ml-auto text-white self-start">
+            {scale ? (
+              <div className="px-3 py-1.5 bg-white/20 text-white rounded-lg text-sm backdrop-blur-sm">
+        📏 Scale: {(() => {
+          const mPerPx = scale;
+          const pxPerM = mPerPx > 0 ? (1 / mPerPx) : 0;
+          const ratio = pxPerM > 0 ? Math.ceil(pxPerM) : 0; // round up
+          return `1:${ratio}`;
+        })()}
+                {scaleConfidence !== null && (
+                  <span className="ml-2 inline-flex items-center text-xs px-2 py-0.5 rounded bg-white/30 text-white">
+                    {Math.round(scaleConfidence*100)}%{scaleMethod ? ` • ${scaleMethod}` : ''}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div className="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm">⚠️ No Scale Set</div>
+            )}
+            <div className="flex items-center">
+              <div className="bg-white/20 rounded-lg text-white text-xs overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setDisplayUnit('m')}
+                  className={`px-2 py-1 ${displayUnit === 'm' ? 'bg-white/30 font-semibold' : 'hover:bg-white/10'}`}
+                  title="Show distances/areas in meters"
+                >m</button>
+                <button
+                  type="button"
+                  onClick={() => setDisplayUnit('ft')}
+                  className={`px-2 py-1 ${displayUnit === 'ft' ? 'bg-white/30 font-semibold' : 'hover:bg-white/10'}`}
+                  title="Show distances/areas in feet"
+                >ft</button>
+              </div>
+            </div>
+          </div>
         </div>
-        
+
         {/* Antenna Controls */}
         {mode === 'antenna' && (
-          <div className="flex items-center space-x-3 mt-3 p-3 bg-white/10 rounded-lg backdrop-blur-sm">
-            <div className="text-white text-sm font-medium">
-              📡 <strong>Antenna Mode</strong> • Click to place • Drag to move • Ctrl+Click to select • Alt+Click to delete
-            </div>
-            
-            <SmartAutoPlaceButton 
-              onClick={() => {
+          <div className="mt-3 space-y-2 rounded-lg bg-white/10 p-3 backdrop-blur-sm text-sm text-white">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2 font-medium">
+                <span>📡 <strong>Antenna Mode</strong></span>
+                <span
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/20 text-white text-sm font-semibold cursor-help"
+                  title="Click to place • Drag to move • Ctrl+Click to select • Alt+Click to delete"
+                >
+                  ?
+                </span>
+              </div>
+              <SmartAutoPlaceButton
+                className="px-3 py-1.5 bg-green-600 text-white rounded-lg shadow-sm hover:bg-green-700 disabled:opacity-40"
+                onClick={() => {
                 console.log('Auto Place clicked with data:', {
                   perimeter: perimeter?.length,
                   scale,
                   currentArea: currentArea.length,
                   savedAreas: savedAreas.length,
                   antennaRange,
-                  antennaDensity
+                  spacingPercent: normalizedSpacingPercent,
+                  overlapPercent,
+                  placementMode
                 });
                 
                 if (!scale) {
@@ -3134,14 +3391,19 @@ export default function FloorplanCanvas({
                 })));
                 console.log('🟩 SMART PLACE: Total exclusions being passed =', allExclusions.length);
                 
-                // Generate antennas directly (don't rely on preview)
-                const placedAntennas = generateFullCoverageAntennas({
-                  areas: areasToUse,
+                const canvasToImageScale = computeCanvasToImageScale();
+
+                // Generate antennas using shared buffered solver
+                const placedAntennas = simpleAutoPlaceAntennas({
+                  savedAreas: areasToUse,
                   scale,
-                  rangeMeters: antennaRange,
-                  power: 50,
+                  defaultAntennaRange: antennaRange,
+                  defaultAntennaPower: 50,
                   isPointInPolygon,
                   exclusions: allExclusions,
+                  gridSpacingPercent: normalizedSpacingPercent,
+                  canvasToImageScale,
+                  placementMode,
                 });
                 
                 if (placedAntennas.length > 0) {
@@ -3153,74 +3415,50 @@ export default function FloorplanCanvas({
                 } else {
                   alert('No antennas could be placed. Check your area selection and exclusion zones.');
                 }
-              }}
-              perimeter={perimeter}
-              savedAreas={savedAreas}
-              objects={objects}
-              selection={currentArea.length > 0 ? currentArea : null}
-              scale={scale}
-            />
-            
-            <button
-              onClick={() => {
+                }}
+                perimeter={perimeter}
+                savedAreas={savedAreas}
+                objects={objects}
+                selection={currentArea.length > 0 ? currentArea : null}
+                scale={scale}
+              />
+              <button
+                onClick={() => {
                 console.log('Coverage button clicked, current state:', showCoverage);
                 setShowCoverage(!showCoverage);
                 // Remove forced redraw - let React handle it naturally
-              }}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                }}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
                 showCoverage 
                   ? 'bg-green-500 text-white shadow-sm' 
                   : 'bg-white/20 text-white hover:bg-white/30'
-              }`}
-            >
-              Coverage
-            </button>
-            
-            <button
-              onClick={() => {
+                }`}
+              >
+                Coverage
+              </button>
+              <button
+                onClick={() => {
                 console.log('Boundaries button clicked, current state:', showRadiusBoundary);
                 setShowRadiusBoundary(!showRadiusBoundary);
                 // Let React handle redraw naturally
-              }}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                }}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
                 showRadiusBoundary 
                   ? 'bg-blue-500 text-white shadow-sm' 
                   : 'bg-white/20 text-white hover:bg-white/30'
-              }`}
-            >
-              Boundaries
-            </button>
-            
-            <div className="flex items-center space-x-2 text-white text-sm">
-              <span>Radius:</span>
-              {selectedAntennaId && (
-                <span className="px-2 py-0.5 rounded bg-white/20 text-white text-xs mr-1" title="Adjusting only the selected antenna">
-                  Editing selected
-                </span>
-              )}
-              {selectedAntennaId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const sel = antennas.find(a => a.id === selectedAntennaId);
-                    if (!sel || sel.range === antennaRange) return;
-                    pushHistory();
-                    setAntennas(prev => prev.map(a => a.id === selectedAntennaId ? { ...a, range: antennaRange } : a));
-                  }}
-                  disabled={(antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) === antennaRange}
-                  className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-white text-xs border border-white/20 disabled:opacity-50 mr-1"
-                  title="Reset selected antenna to the global radius"
-                >
-                  Reset
-                </button>
-              )}
-              <input
-                type="range"
-                min="1"
-                max="30"
-                step="0.5"
-                value={selectedAntennaId ? (antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) : antennaRange}
-                onChange={(e) => {
+                }`}
+              >
+                Boundaries
+              </button>
+              <div className="flex flex-wrap items-center gap-2 rounded-lg bg-white/5 px-2 py-1 text-xs sm:text-sm">
+                <span>Radius:</span>
+                <input
+                  type="range"
+                  min="1"
+                  max="30"
+                  step="0.5"
+                  value={selectedAntennaId ? (antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) : antennaRange}
+                  onChange={(e) => {
                   const v = parseFloat(e.target.value);
                   if (selectedAntennaId) {
                     pushHistory();
@@ -3231,23 +3469,23 @@ export default function FloorplanCanvas({
                     const old = antennaRange;
                     if (v !== old) pushHistory();
                     setAntennaRange(v);
-                    if (antennas.length > 0 && lockPositions) {
+                    if (antennas.length > 0) {
                       setAntennas(prev => prev.map(a => (a.range === old ? { ...a, range: v } : a)));
                     }
                     if (previewAntennas.length > 0) {
                       setPreviewAntennas(prev => prev.map(a => ({ ...a, range: v })));
                     }
                   }
-                }}
-                className="w-24"
-              />
-              <input
-                type="number"
-                min="1"
-                max="50"
-                step="0.1"
-                value={selectedAntennaId ? (antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) : antennaRange}
-                onChange={(e) => {
+                  }}
+                  className="w-24"
+                />
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  step="0.1"
+                  value={selectedAntennaId ? (antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) : antennaRange}
+                  onChange={(e) => {
                   const v = parseFloat(e.target.value) || 1;
                   if (selectedAntennaId) {
                     pushHistory();
@@ -3258,107 +3496,100 @@ export default function FloorplanCanvas({
                     const old = antennaRange;
                     if (v !== old) pushHistory();
                     setAntennaRange(v);
-                    if (antennas.length > 0 && lockPositions) {
+                    if (antennas.length > 0) {
                       setAntennas(prev => prev.map(a => (a.range === old ? { ...a, range: v } : a)));
                     }
                     if (previewAntennas.length > 0) {
                       setPreviewAntennas(prev => prev.map(a => ({ ...a, range: v })));
                     }
                   }
-                }}
-                className="w-12 px-1 py-0.5 rounded bg-white/20 text-white text-center text-xs border border-white/30 focus:border-white/50 focus:outline-none"
-              />
-              <span>m</span>
-              {antennas.length > 0 && (
-                <label className="flex items-center space-x-1 ml-2 text-xs cursor-pointer select-none">
+                  }}
+                  className="w-12 px-1 py-0.5 rounded bg-white/20 text-white text-center text-xs border border-white/30 focus:border-white/50 focus:outline-none"
+                />
+                <span>m</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs sm:text-sm">Overlap</span>
                   <input
-                    type="checkbox"
-                    checked={lockPositions}
-                    onChange={(e) => setLockPositions(e.target.checked)}
+                    type="range"
+                    min="0"
+                    max="50"
+                    step="1"
+                    value={overlapPercent}
+                    onChange={(e) => handleOverlapChange(parseInt(e.target.value, 10))}
+                    className="w-28"
                   />
-                  <span>{lockPositions ? 'Resize only' : 'Recalc on next placement'}</span>
-                </label>
-              )}
-            </div>
-            
-            <button
-              onClick={() => {
+                  <span className="text-xs sm:text-sm w-10">{overlapPercent}%</span>
+                </div>
+              </div>
+              <button
+                onClick={() => {
                 console.log('Clearing antennas...');
                 pushHistory();
                 setAntennas([]);
                 setSelectedAntennaId(null);
                 // No need for setTimeout - useEffect will handle redraw
-              }}
-              className="bg-red-500/80 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-red-500 transition-all"
-            >
-              Clear Antennas
-            </button>
-            
-            {antennas.length > 0 && (
-              <div className="text-white/90 text-sm bg-white/10 px-3 py-1.5 rounded-lg backdrop-blur-sm">
-                <span className="font-medium">{antennas.length}</span> antenna{antennas.length !== 1 ? 's' : ''} placed
-              </div>
-            )}
-            
+                }}
+                className="bg-red-500/80 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-red-500 transition-all"
+              >
+                Clear Antennas
+              </button>
+              {antennas.length > 0 && (
+                <div className="text-white/90 text-sm bg-white/10 px-3 py-1.5 rounded-lg backdrop-blur-sm">
+                  <span className="font-medium">{antennas.length}</span> antenna{antennas.length !== 1 ? 's' : ''} placed
+                </div>
+              )}
+            </div>
+
             {selectedAntennaId && (
-              <div className="text-white/80 text-xs bg-white/10 px-2 py-1 rounded">
-                Selected: {antennas.find(a => a.id === selectedAntennaId)?.id.slice(-4)}
+              <div className="flex flex-wrap items-center gap-3 text-xs text-white/80 border-t border-white/10 pt-2 mt-1">
+                <span className="rounded bg-white/15 px-2 py-0.5 uppercase tracking-wide text-white/85">
+                  Editing selected antenna
+                </span>
+                <span className="rounded-full border border-white/25 bg-white/10 px-3 py-1 text-white">
+                  Selected: {antennas.find(a => a.id === selectedAntennaId)?.id.slice(-4)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sel = antennas.find(a => a.id === selectedAntennaId);
+                    if (!sel || sel.range === antennaRange) return;
+                    pushHistory();
+                    setAntennas(prev => prev.map(a => (a.id === selectedAntennaId ? { ...a, range: antennaRange } : a)));
+                  }}
+                  disabled={(antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) === antennaRange}
+                  className="px-2 py-0.5 rounded border border-white/25 bg-white/10 text-white transition hover:bg-white/20 disabled:opacity-50"
+                  title="Reset selected antenna to the global radius"
+                >
+                  Reset to global radius
+                </button>
               </div>
             )}
           </div>
         )}
         
-        <div className="flex items-center space-x-2">
-      {scale ? (
-            <div className="px-3 py-1.5 bg-white/20 text-white rounded-lg text-sm backdrop-blur-sm">
-        📏 Scale: {(() => {
-          const mPerPx = scale;
-          const pxPerM = mPerPx > 0 ? (1 / mPerPx) : 0;
-          const ratio = pxPerM > 0 ? Math.ceil(pxPerM) : 0; // round up
-          return `1:${ratio}`;
-        })()}
-              {scaleConfidence !== null && (
-                <span className="ml-2 inline-flex items-center text-xs px-2 py-0.5 rounded bg-white/30 text-white">
-                  {Math.round(scaleConfidence*100)}%{scaleMethod ? ` • ${scaleMethod}` : ''}
-                </span>
-              )}
-            </div>
-          ) : (
-            <div className="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm">⚠️ No Scale Set</div>
-          )}
-
-          {/* Display Unit Toggle */}
-          <div className="flex items-center ml-1">
-            <div className="bg-white/20 rounded-lg text-white text-xs overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setDisplayUnit('m')}
-                className={`px-2 py-1 ${displayUnit === 'm' ? 'bg-white/30 font-semibold' : 'hover:bg-white/10'}`}
-                title="Show distances/areas in meters"
-              >m</button>
-              <button
-                type="button"
-                onClick={() => setDisplayUnit('ft')}
-                className={`px-2 py-1 ${displayUnit === 'ft' ? 'bg-white/30 font-semibold' : 'hover:bg-white/10'}`}
-                title="Show distances/areas in feet"
-              >ft</button>
-            </div>
+        {/* Refine Mode Instructions */}
+        {mode === 'refine' && (
+          <div className="px-3 py-1.5 bg-blue-500/20 text-white rounded-lg text-sm backdrop-blur-sm">
+            🔧 Refine: Drag to move • Alt+click to delete • Ctrl+click to add dots
           </div>
-
-          
-          {/* Refine Mode Instructions */}
-          {mode === 'refine' && (
-            <div className="px-3 py-1.5 bg-blue-500/20 text-white rounded-lg text-sm backdrop-blur-sm">
-              🔧 Refine: Drag to move • Alt+click to delete • Ctrl+click to add dots
-            </div>
-          )}
-        </div>
+        )}
       </div>
 
       {/* Canvas */}
-  <div ref={containerRef} className="flex-1 min-h-0 overflow-auto p-4" style={{ overscrollBehavior: 'contain', touchAction: 'none' }}>
+      <div
+        ref={containerRef}
+        className="relative flex flex-1 min-h-0 items-end overflow-hidden"
+        style={{
+          overscrollBehavior: 'contain',
+          touchAction: 'none',
+          paddingLeft: CANVAS_EDGE_MARGIN,
+          paddingTop: CANVAS_VERTICAL_PADDING,
+          paddingBottom: CANVAS_VERTICAL_PADDING,
+          paddingRight: CANVAS_EDGE_MARGIN,
+        }}
+      >
         {imageLoaded ? (
-          <div className="flex justify-center">
+          <div className="flex h-full w-full items-end justify-start">
             <canvas
               ref={canvasRef}
               onClick={handleCanvasClick}
@@ -3369,10 +3600,12 @@ export default function FloorplanCanvas({
       onMouseLeave={handleMouseLeave}
       onContextMenu={preventContext}
       data-main-canvas="1"
-      className={`border border-gray-200 ${isPanCursor ? 'cursor-grabbing' : 'cursor-crosshair'} shadow-lg rounded`}
+      className={`block border border-gray-200 ${isPanCursor ? 'cursor-grabbing' : 'cursor-crosshair'} shadow-lg rounded`}
               style={{ 
+                width: canvasSize.width || undefined,
+                height: canvasSize.height || undefined,
                 maxWidth: '100%',
-                height: 'auto'
+                maxHeight: '100%',
               }}
             />
           </div>
@@ -3435,7 +3668,10 @@ export default function FloorplanCanvas({
 
   {/* Area Results - Professional */}
   {(selections.length > 0 || floors.length > 0) && (
-        <div className="absolute right-4 top-32 bottom-4 z-[1100] p-4 bg-white/95 border rounded-lg shadow flex flex-col min-w-80 max-w-96">
+        <div
+          ref={summaryRef}
+          className="absolute z-[1100] p-4 bg-white/95 border rounded-lg shadow flex flex-col min-w-80 max-w-96"
+          style={{ top: summaryTopOffset, bottom: CANVAS_VERTICAL_PADDING, right: CANVAS_EDGE_MARGIN }}>
           <h3 className="font-semibold text-gray-900 mb-4">Summary</h3>
 
           {/* Floors Panel - Always show so Add Floor button is available */}
@@ -3462,7 +3698,7 @@ export default function FloorplanCanvas({
               </svg>
             </div>
             <div>
-<p className="text-sm font-medium text-blue-800">{mode === 'measure' ? 'Measuring distance (press M to toggle)' : 'Drawing area'}</p>
+<p className="text-sm font-medium text-blue-800">{mode === 'measure' ? 'Measuring distance' : 'Drawing area'}</p>
 <p className="text-xs text-blue-600">{currentArea.length} points selected{mode === 'measure' ? ' • Add is disabled in Measure' : (currentArea.length >= 3 ? ' • Click "Add" to complete' : ` • ${3 - currentArea.length} more points needed`)}</p>
             </div>
           </div>

@@ -7,6 +7,7 @@ A Next.js web application that uses AI to analyze architectural floorplans, dete
 ## Features
 
 - **Drag & Drop Upload**: Support for PDF and image files (PNG, JPG, etc.)
+- **Multi-floor PDF Ingestion**: Automatically splits multi-page PDFs into per-floor entries with coverage heuristics
 - **AI Scale Detection**: Automatically detect scale bars and dimension annotations
 - **Manual Scale Setting**: Draw reference lines and set known distances
 - **Area Calculation**: Select areas with polygon drawing tools
@@ -53,9 +54,10 @@ npm run dev
 
 ### Basic Workflow
 
-1. **Upload a Floorplan**
+1. **Upload Floorplans**
    - Drag and drop a PDF or image file into the upload area
    - Supported formats: PDF, PNG, JPG, GIF, BMP (up to 50MB)
+   - Multi-page PDFs are rendered page-by-page; likely text-only pages are skipped automatically
 
 2. **Set the Scale**
    - **Auto Detection**: Click "Auto Detect Scale" to let AI find scale bars
@@ -64,14 +66,25 @@ npm run dev
      - Draw a line on a known distance in the floorplan
      - Enter the real-world measurement and units
 
-3. **Select Areas**
+3. **Work with Multiple Floors (Optional)**
+   - Each PDF page becomes its own staged floor; rename or delete any before analysis
+   - Re-open the "Add Floor" button inside a project to append more pages later
+
+4. **Select Areas**
    - Click "Select Area" mode
    - Click points around the area you want to measure
    - Click "Finish Area" when done (minimum 3 points)
 
-4. **View Results**
+5. **View Results**
    - Calculated areas appear in the results panel
    - Areas are displayed in your selected units (meters², feet², etc.)
+
+### Working with Multi-page PDFs
+
+- The renderer scans up to 40 pages per upload to keep the experience snappy.
+- Pages with very low ink coverage (typically schedules or cover sheets) are flagged as text-heavy and skipped by default. They can be restored from the staged list if needed.
+- Coverage heuristics and fallback renderers surface warnings in the UI so you know when manual review is recommended.
+- If the primary PDF renderer fails, the app automatically tries alternate converters and labels the affected pages.
 
 ### Controls
 

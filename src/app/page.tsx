@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import Image from 'next/image';
+import { getDownloadURL, ref } from 'firebase/storage';
 import FileUpload from '@/components/FileUpload';
 import FloorUpload from '@/components/FloorUpload';
 import ScaleControl from '@/components/ScaleControl';
@@ -10,10 +11,11 @@ import FloorplanCanvas from '@/components/FloorplanCanvas';
 import NameProjectModal from '@/components/NameProjectModal';
 import { ProjectService } from '@/services/projectService';
 import { FloorService } from '@/services/floorService';
-import { CanvasState, ProjectSummary, FloorSummary, FloorData, FloorEntry, Units } from '@/types/project';
+import { CanvasState, ProjectSummary, FloorSummary, FloorData, FloorEntry, Units, ProjectEngineer } from '@/types/project';
 import { captureCanvasThumbnail } from '@/utils/thumbnail';
 import { computeFloorStatistics, normaliseUnit } from '@/utils/floorStats';
 import { onAuthChange, signInWithGoogle, signOutUser, getCurrentUser, ensureAnonymousAuth } from '@/lib/firebaseAuth';
+import { storage } from '@/lib/firebase';
 
 declare global {
   interface WindowEventMap {
@@ -44,10 +46,54 @@ export default function Home() {
   const [search, setSearch] = useState<string>('');
   const [sortBy, setSortBy] = useState<'lastOpened'|'name'|'antennas'>('lastOpened');
   const [authEmail, setAuthEmail] = useState<string | null>(null);
+  const [currentEngineer, setCurrentEngineer] = useState<ProjectEngineer | null>(null);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
   const [logoPxWidth, setLogoPxWidth] = useState<number | null>(null);
-  const [logoSource, setLogoSource] = useState<string>('/uctel-logo.svg');
+  const logoSource = '/uctel-logo.png';
   const [showLogo, setShowLogo] = useState<boolean>(true);
+
+  const deriveEngineer = useCallback((input?: { displayName?: string | null; email?: string | null; uid?: string | null }): ProjectEngineer | null => {
+    if (!input) return null;
+    const email = input.email || undefined;
+    const displayNameSrc = input.displayName || undefined;
+    let displayName = displayNameSrc && displayNameSrc.trim().length > 0 ? displayNameSrc.trim() : undefined;
+    if (!displayName && email) {
+      const local = email.split('@')[0] || '';
+      if (local) {
+        displayName = local
+          .replace(/[._-]+/g, ' ')
+          .split(' ')
+          .filter(Boolean)
+          .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
+          .join(' ');
+      }
+    }
+    if (!displayName && !email) return input.uid ? { uid: input.uid || undefined } : null;
+    return {
+      uid: input.uid || undefined,
+      email,
+      displayName,
+    };
+  }, []);
+
+  const resolveEngineerName = useCallback((engineer?: ProjectEngineer | null): string => {
+    if (!engineer) return 'Unknown engineer';
+    if (engineer.displayName && engineer.displayName.trim().length > 0) {
+      return engineer.displayName.trim();
+    }
+    if (engineer.email && engineer.email.trim().length > 0) {
+      const local = engineer.email.split('@')[0] || '';
+      if (local) {
+        return local
+          .replace(/[._-]+/g, ' ')
+          .split(' ')
+          .filter(Boolean)
+          .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
+          .join(' ');
+      }
+    }
+    return 'Unknown engineer';
+  }, []);
   
   // Multi-floor state
   const [floors, setFloors] = useState<FloorEntry[]>([]);
@@ -59,17 +105,37 @@ export default function Home() {
 
   const floorStateHashesRef = useRef<Map<string, string>>(new Map());
 
-  const handleLogoLoadError = useCallback(() => {
-    setLogoSource(prev => {
-      if (prev === '/uctel-logo.svg') {
-        console.warn('UCtel SVG logo missing, falling back to PNG');
-        return '/uctel-logo.png';
+  const resolveImageUrl = useCallback(async (metadata?: { imageUrl?: string; storagePath?: string; thumbnailUrl?: string }): Promise<string | null> => {
+    if (!metadata) {
+      return null;
+    }
+
+    const directUrl = typeof metadata.imageUrl === 'string' && metadata.imageUrl.trim().length > 0
+      ? metadata.imageUrl
+      : null;
+    if (directUrl) {
+      return directUrl;
+    }
+
+    if (metadata.storagePath) {
+      try {
+        const downloadUrl = await getDownloadURL(ref(storage, metadata.storagePath));
+        return downloadUrl;
+      } catch (err) {
+        console.warn('Failed to resolve image URL from storage path', metadata.storagePath, err);
       }
-      setShowLogo(false);
-      console.warn('UCtel logo missing');
-      return prev;
-    });
-  }, [setShowLogo, setLogoSource]);
+    }
+
+    const fallbackThumb = typeof metadata.thumbnailUrl === 'string' && metadata.thumbnailUrl.trim().length > 0
+      ? metadata.thumbnailUrl
+      : null;
+    return fallbackThumb;
+  }, []);
+
+  const handleLogoLoadError = useCallback(() => {
+    console.warn('UCtel logo missing, hiding image');
+    setShowLogo(false);
+  }, [setShowLogo]);
 
   const computeStateHash = useCallback((state: CanvasState | null): string => {
     if (!state) return '';
@@ -250,9 +316,11 @@ export default function Home() {
       }
       const u = getCurrentUser();
       setAuthEmail(u?.email || null);
+      setCurrentEngineer(deriveEngineer({ displayName: u?.displayName, email: u?.email, uid: u?.uid }));
       unsub = onAuthChange(user => {
         const email = user?.email || null;
         setAuthEmail(email);
+        setCurrentEngineer(deriveEngineer({ displayName: user?.displayName, email: user?.email, uid: user?.uid }));
         if (email) {
           loadProjects();
         } else {
@@ -266,7 +334,7 @@ export default function Home() {
       });
     })();
     return () => { if (unsub) unsub(); };
-  }, [loadProjects]);
+  }, [loadProjects, deriveEngineer]);
 
   const toggleProjectSelection = useCallback((projectId: string) => {
     setSelectedProjectIds(prev => {
@@ -330,7 +398,18 @@ export default function Home() {
         try {
           const data = await FloorService.getFloor(projectId, summary.id);
           if (data) {
-            entries.push(toFloorEntry(data));
+            let resolvedMetadata = data.metadata;
+            const resolvedImageUrl = await resolveImageUrl(data.metadata);
+            if (resolvedImageUrl && resolvedImageUrl !== data.metadata?.imageUrl) {
+              resolvedMetadata = { ...data.metadata, imageUrl: resolvedImageUrl };
+            }
+
+            const entry = toFloorEntry({ ...data, metadata: resolvedMetadata });
+            entries.push({
+              ...entry,
+              imageUrl: resolvedImageUrl || entry.imageUrl,
+              thumbnailUrl: entry.thumbnailUrl || resolvedImageUrl || entry.imageUrl,
+            });
           }
         } catch (err) {
           console.warn('Failed to load floor', summary.id, err);
@@ -348,7 +427,7 @@ export default function Home() {
     } finally {
       setFloorsLoading(false);
     }
-  }, [currentFloorId, toFloorEntry]);
+  }, [currentFloorId, toFloorEntry, resolveImageUrl]);
 
   const handleSelectFloor = useCallback(async (floorId: string) => {
     if (floorId === currentFloorId) {
@@ -362,7 +441,18 @@ export default function Home() {
       try {
         const floorData = await FloorService.getFloor(currentProjectId, floorId);
         if (floorData) {
-          entry = toFloorEntry(floorData);
+          const resolvedImageUrl = await resolveImageUrl(floorData.metadata);
+          const hydratedEntry = toFloorEntry({
+            ...floorData,
+            metadata: resolvedImageUrl && resolvedImageUrl !== floorData.metadata?.imageUrl
+              ? { ...floorData.metadata, imageUrl: resolvedImageUrl }
+              : floorData.metadata,
+          });
+          entry = {
+            ...hydratedEntry,
+            imageUrl: resolvedImageUrl || hydratedEntry.imageUrl,
+            thumbnailUrl: hydratedEntry.thumbnailUrl || resolvedImageUrl || hydratedEntry.imageUrl,
+          };
           setFloors(prev => prev.map(f => (f.id === floorId ? entry! : f)));
         }
       } catch (e) {
@@ -370,8 +460,9 @@ export default function Home() {
       }
     }
 
-    const resolvedImageUrl = entry.imageUrl
-      || (entry.imageFile ? URL.createObjectURL(entry.imageFile) : imageUrl);
+    const resolvedImageUrl = (entry.imageUrl && entry.imageUrl.trim().length > 0)
+      ? entry.imageUrl
+      : (entry.imageFile ? URL.createObjectURL(entry.imageFile) : imageUrl);
 
     setCurrentFloorId(entry.id);
     setScale(typeof entry.scale === 'number' ? entry.scale : null);
@@ -381,7 +472,7 @@ export default function Home() {
     canvasStateRef.current = entry.canvasState;
 
     setShowCanvas(true);
-  }, [currentFloorId, floors, currentProjectId, toFloorEntry, imageUrl]);
+  }, [currentFloorId, floors, currentProjectId, toFloorEntry, imageUrl, resolveImageUrl]);
 
   const handleAddFloor = useCallback(async () => {
     setFloorUploadTargetProjectId(currentProjectId ?? null);
@@ -834,21 +925,24 @@ export default function Home() {
         // Multi-floor project: load the first floor with an image
         let floorToLoad = floorsList[0]; // Default to first floor
         let floorData = await FloorService.getFloor(projectId, floorToLoad.id);
-        
-        // If first floor has no image, try to find any floor with an image
-        if (!floorData || !floorData.metadata.imageUrl) {
+        let resolvedFloorImageUrl = floorData ? await resolveImageUrl(floorData.metadata) : null;
+
+        if (!resolvedFloorImageUrl) {
           for (const floor of floorsList) {
             const tempFloorData = await FloorService.getFloor(projectId, floor.id);
-            if (tempFloorData && tempFloorData.metadata.imageUrl) {
+            if (!tempFloorData) continue;
+            const tempUrl = await resolveImageUrl(tempFloorData.metadata);
+            if (tempUrl) {
               floorToLoad = floor;
               floorData = tempFloorData;
+              resolvedFloorImageUrl = tempUrl;
               break;
             }
           }
         }
-        
-        if (floorData && floorData.metadata.imageUrl) {
-          setImageUrl(floorData.metadata.imageUrl);
+
+        if (floorData && resolvedFloorImageUrl) {
+          setImageUrl(resolvedFloorImageUrl);
           setLoadedCanvasState(floorData.canvasState);
           canvasStateRef.current = floorData.canvasState;
           setCurrentFloorId(floorToLoad.id);
@@ -860,17 +954,31 @@ export default function Home() {
             setScale(null);
           }
         } else {
-          alert('Project has no floors with associated images');
-          return;
+          const fallbackUrl = await resolveImageUrl(projectData.metadata);
+          if (fallbackUrl) {
+            setImageUrl(fallbackUrl);
+            setLoadedCanvasState(projectData.canvasState);
+            canvasStateRef.current = projectData.canvasState;
+            setCurrentFloorId(floorData ? floorToLoad.id : null);
+            if (typeof projectData.canvasState.scale === 'number') {
+              setScale(projectData.canvasState.scale);
+            } else {
+              setScale(null);
+            }
+          } else {
+            alert('Project has no floors with associated images');
+            return;
+          }
         }
       } else {
         // Single-floor (legacy) project: load directly from project
-        if (!projectData.metadata.imageUrl) {
+        const projectImageUrl = await resolveImageUrl(projectData.metadata);
+        if (!projectImageUrl) {
           alert('Project has no associated image');
           return;
         }
-        
-        setImageUrl(projectData.metadata.imageUrl);
+
+        setImageUrl(projectImageUrl);
         setLoadedCanvasState(projectData.canvasState);
         canvasStateRef.current = projectData.canvasState;
         
@@ -882,7 +990,7 @@ export default function Home() {
         }
       }
       
-      setUnit(projectData.settings.units || 'meters');
+  setUnit(projectData.settings.units || 'meters');
       setCurrentProjectId(projectData.id);
       setCurrentProjectName(projectData.name);
       // reset dirty tracking to clean baseline
@@ -902,7 +1010,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [computeStateHash, authEmail, loadFloors]);
+  }, [computeStateHash, authEmail, loadFloors, resolveImageUrl]);
 
   // Load projects on component mount
   useEffect(() => {
@@ -1118,6 +1226,7 @@ export default function Home() {
                   const selected = selectedProjectIds.has(project.id);
                   const last = project.lastOpenedAt || project.updatedAt || project.createdAt;
                   const lastLabel = 'Last opened';
+                  const engineerName = resolveEngineerName(project.engineer ?? currentEngineer);
                   return (
                     <li
                       key={project.id}
@@ -1150,6 +1259,7 @@ export default function Home() {
                           <div className="flex items-center justify-between">
                             <h3 className="font-medium text-gray-900 pr-4 break-words">{project.name}</h3>
                             <div className="flex items-center gap-3">
+                              <span className="text-xs text-gray-500 whitespace-nowrap">Engineer: {engineerName}</span>
                               <span className="text-xs text-gray-500 whitespace-nowrap">{lastLabel}: {last.toLocaleString()}</span>
                               {isLoading && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600" />}
                             </div>
@@ -1191,7 +1301,6 @@ export default function Home() {
             <ScaleControl
               currentScale={scale}
               currentUnit={unit}
-              onScaleSet={(s,u)=>{ setScale(s); setUnit(u); }}
               onRequestCalibrate={() => setCalibrateTick(t => t + 1)}
             />
             <button

@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import Image from 'next/image';
 import { FloorSummary, Units } from '@/types/project';
 
 interface FloorsPanelProps {
@@ -160,12 +161,14 @@ export default function FloorsPanel({
                   <div className="p-3">
                     <div className="flex items-center gap-3">
                       {/* Thumbnail */}
-                      <div className="w-12 h-12 bg-gray-100 rounded border overflow-hidden flex-shrink-0">
+                      <div className="relative w-12 h-12 bg-gray-100 rounded border overflow-hidden flex-shrink-0">
                         {floor.thumbnailUrl ? (
-                          <img
+                          <Image
+                            fill
                             src={floor.thumbnailUrl}
                             alt={floor.name}
-                            className="w-full h-full object-cover"
+                            sizes="48px"
+                            className="object-cover"
                           />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-gray-400 text-xs">

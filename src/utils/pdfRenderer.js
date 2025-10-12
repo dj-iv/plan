@@ -231,12 +231,12 @@ export async function renderPdfFallback(file, pageNumber = 1) {
  * @param {File} file - The PDF file to render 
  * @returns {Promise<string>} - Promise that resolves with the data URL of the rendered page
  */
-export async function renderPdfAlternative(file, pageNumber = 1) {
+export async function renderPdfAlternative(file, _pageNumber = 1) {
   try {
     console.log('Using PDF alternative rendering method');
     
     // Load PDF.js
-    const pdfjs = await loadPdfJs();
+    await loadPdfJs();
     
     // Create a URL for the PDF file
     const fileURL = URL.createObjectURL(file);
@@ -278,8 +278,8 @@ export async function renderPdfAlternative(file, pageNumber = 1) {
             } else {
               reject(new Error('Could not get canvas context'));
             }
-          } catch (e) {
-            reject(e);
+          } catch (error) {
+            reject(error);
           } finally {
             // Clean up
             document.body.removeChild(iframe);
@@ -289,7 +289,7 @@ export async function renderPdfAlternative(file, pageNumber = 1) {
       };
       
       // Handle errors
-      iframe.onerror = (e) => {
+      iframe.onerror = () => {
         document.body.removeChild(iframe);
         URL.revokeObjectURL(fileURL);
         reject(new Error('Failed to load PDF in iframe'));

@@ -1,17 +1,12 @@
 'use client';
 
-import { useState } from 'react';
-
 interface ScaleControlProps {
-  onScaleSet: (scale: number, unit: string) => void;
   currentScale: number | null;
   currentUnit: string;
   onRequestCalibrate?: () => void;
 }
 
-export default function ScaleControl({ onScaleSet, currentScale, currentUnit, onRequestCalibrate }: ScaleControlProps) {
-  const [unit] = useState('meters');
-
+export default function ScaleControl({ currentScale, currentUnit, onRequestCalibrate }: ScaleControlProps) {
   // Manual numeric entry removed; prefer Calibrate on canvas
 
   return (

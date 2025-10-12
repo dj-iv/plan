@@ -105,8 +105,8 @@ export async function useNativePdfViewer(file) {
     
     document.body.appendChild(obj);
     
-    // Wait for the PDF to load
-    return new Promise((resolve, reject) => {
+  // Wait for the PDF to load
+  return new Promise((resolve, _reject) => {
       setTimeout(() => {
         try {
           // Create a canvas to capture the rendered PDF
