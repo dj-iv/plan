@@ -96,7 +96,7 @@ async function requestPlanFromAi(messages: ChatMessage[]): Promise<string | null
       temperature: 0.25,
       response_format: responseFormat,
       input: messages,
-    });
+    } as any);
 
     const primary = response.output_text?.trim();
     if (primary) return primary;
@@ -110,7 +110,7 @@ async function requestPlanFromAi(messages: ChatMessage[]): Promise<string | null
         temperature: 0.25,
         response_format: responseFormat as any,
         messages,
-      });
+      } as any);
       const choice = completion.choices?.[0]?.message;
       const text = extractText(choice?.content ?? null);
       if (text) return text;
