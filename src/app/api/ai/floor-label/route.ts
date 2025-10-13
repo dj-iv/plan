@@ -60,15 +60,27 @@ export async function POST(req: NextRequest) {
           role: 'user',
           content: [
             { type: 'input_text', text: userTextParts.join('\n') },
-            { type: 'input_image', image_url: imageUrl },
+            {
+              type: 'input_image',
+              image_url: imageUrl,
+              detail: 'auto',
+            },
           ],
         },
       ],
     });
 
-    const rawText = response.output_text?.trim()
-      || response.output?.[0]?.content?.find?.(item => 'text' in item)?.text?.trim?.()
-      || '';
+    let rawText = response.output_text?.trim() || '';
+    if (!rawText) {
+      const firstOutput = response.output?.[0];
+      if (firstOutput && typeof (firstOutput as { type?: string }).type === 'string' && 'content' in firstOutput) {
+        const message = firstOutput as { content?: Array<{ type?: string; text?: string }> };
+        const textItem = message.content?.find?.(item => item?.type === 'output_text' && typeof item.text === 'string');
+        if (textItem?.text) {
+          rawText = textItem.text.trim();
+        }
+      }
+    }
     let parsed: FloorNameAiResponse = { floorName: null, raw: rawText };
 
     if (rawText) {

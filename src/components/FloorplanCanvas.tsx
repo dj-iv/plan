@@ -3168,7 +3168,11 @@ export default function FloorplanCanvas({
       const copyComputedStyles = (source: HTMLElement, target: HTMLElement) => {
         const sourceStyles = window.getComputedStyle(source);
         const targetStyle = target.style;
-        for (const property of sourceStyles) {
+        for (let i = 0; i < sourceStyles.length; i += 1) {
+          const property = sourceStyles.item(i);
+          if (!property) {
+            continue;
+          }
           const value = sourceStyles.getPropertyValue(property);
           const priority = sourceStyles.getPropertyPriority(property);
           try {
