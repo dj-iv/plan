@@ -209,6 +209,11 @@ export default function FloorplanCanvas({
   const summaryVisible = (selections.length > 0 || floors.length > 0);
   const [summaryTopOffset, setSummaryTopOffset] = useState(CANVAS_VERTICAL_PADDING);
 
+  const multiDeleteStartRef = useRef<Point | null>(null);
+  const [multiDeleteRect, setMultiDeleteRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const multiDeleteActiveRef = useRef(false);
+  const MULTI_DELETE_ACTIVATION_PX = 4;
+
   // Antenna placement feature
   const [antennas, setAntennas] = useState<Antenna[]>([]);
   const [selectedAntennaId, setSelectedAntennaId] = useState<string | null>(null);
@@ -319,6 +324,11 @@ export default function FloorplanCanvas({
   useEffect(() => {
     setShowCoverage(true);
   }, []);
+  useEffect(() => {
+    multiDeleteStartRef.current = null;
+    multiDeleteActiveRef.current = false;
+    setMultiDeleteRect(null);
+  }, [mode]);
   const [isDraggingAntenna, setIsDraggingAntenna] = useState<boolean>(false);
   const [isPlacingAntennas, setIsPlacingAntennas] = useState<boolean>(false); // Flag for auto-placement in progress
   const [antennaRange, setAntennaRange] = useState<number>(7); // Default 7m range for better coverage
@@ -710,7 +720,7 @@ export default function FloorplanCanvas({
     if (imageLoaded && image && canvasSize.width > 0) {
       drawCanvas();
     }
-  }, [imageLoaded, image, canvasSize, areas, currentArea, mode, calibrationPoints, calibrationAreaPoints, holes, excludeCurrent, autoHolesPreview, zoom, pan, roi, perimeter, antennas, previewAntennas, showCoverage, showRadiusBoundary, antennaRange]);
+  }, [imageLoaded, image, canvasSize, areas, currentArea, mode, calibrationPoints, calibrationAreaPoints, holes, excludeCurrent, autoHolesPreview, zoom, pan, roi, perimeter, antennas, previewAntennas, showCoverage, showRadiusBoundary, antennaRange, multiDeleteRect]);
 
   useEffect(() => {
     if (!imageLoaded || !image) return;
@@ -1074,6 +1084,19 @@ export default function FloorplanCanvas({
     ctx.setLineDash([6,4]);
     ctx.lineWidth = 1.5;
     ctx.strokeRect(roi.x, roi.y, roi.w, roi.h);
+    ctx.restore();
+  }
+
+  if (multiDeleteRect) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(239,68,68,0.9)';
+    ctx.fillStyle = 'rgba(239,68,68,0.12)';
+    ctx.setLineDash([5,3]);
+    ctx.lineWidth = Math.max(1, 1.5 / zoom);
+    ctx.beginPath();
+    ctx.rect(multiDeleteRect.x, multiDeleteRect.y, multiDeleteRect.w, multiDeleteRect.h);
+    ctx.fill();
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -2296,6 +2319,58 @@ export default function FloorplanCanvas({
     if (newZoom !== zoom) setZoom(newZoom);
   };
 
+  const performMultiDelete = (rect: { x: number; y: number; w: number; h: number }) => {
+    const contains = (pt: Point) => pt.x >= rect.x && pt.x <= rect.x + rect.w && pt.y >= rect.y && pt.y <= rect.y + rect.h;
+    let perimeterChanged = false;
+    let nextPerimeter = perimeter;
+    if ((mode === 'refine' || mode === 'edit-poly') && perimeter && perimeter.length) {
+      const filtered = perimeter.filter(pt => !contains(pt));
+      if (filtered.length !== perimeter.length) {
+        if (filtered.length >= 3) {
+          nextPerimeter = filtered;
+          perimeterChanged = true;
+        } else {
+          console.warn('Multi-delete skipped: would reduce perimeter below 3 vertices.');
+        }
+      }
+    }
+
+    let holesChanged = false;
+    let nextHoles = holes;
+    if ((mode === 'refine' || mode === 'edit-hole') && holes.length) {
+      const updated: Point[][] = [];
+      for (let i = 0; i < holes.length; i++) {
+        const hole = holes[i];
+        const filtered = hole.filter(pt => !contains(pt));
+        if (filtered.length === hole.length) {
+          updated.push(hole);
+        } else if (filtered.length >= 3) {
+          updated.push(filtered);
+          holesChanged = true;
+        } else {
+          holesChanged = true;
+        }
+      }
+      if (holesChanged) {
+        nextHoles = updated;
+      }
+    }
+
+    const changed = perimeterChanged || holesChanged;
+    if (changed) {
+      pushHistory();
+      if (perimeterChanged && nextPerimeter) setPerimeter(nextPerimeter);
+      if (holesChanged) {
+        setHoles(nextHoles);
+        if (editHoleIndex !== null) {
+          const nextIndex = nextHoles.length ? Math.min(editHoleIndex, nextHoles.length - 1) : null;
+          if (nextIndex !== editHoleIndex) setEditHoleIndex(nextIndex);
+        }
+      }
+    }
+    return changed;
+  };
+
   // Pan with right- or middle-mouse drag
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (mustCalibrate && mode !== 'calibrate' && mode !== 'calibrate-area') {
@@ -2311,8 +2386,20 @@ export default function FloorplanCanvas({
       setIsPanCursor(true);
       lastMouseRef.current = { x: e.clientX, y: e.clientY };
       suppressClickRef.current = true;
-  } else if (e.button === 0) {
-  if ((mode === 'edit-poly' || mode==='refine') && perimeter && perimeter.length) {
+    } else if (e.button === 0) {
+      if ((mode === 'edit-poly' || mode === 'edit-hole' || mode === 'refine') && e.altKey) {
+        const canvas = canvasRef.current; if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        const cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+        const cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+        const wx = (cx - pan.x) / zoom;
+        const wy = (cy - pan.y) / zoom;
+        multiDeleteStartRef.current = { x: wx, y: wy };
+        multiDeleteActiveRef.current = false;
+        setMultiDeleteRect(null);
+        return;
+      }
+      if ((mode === 'edit-poly' || mode==='refine') && perimeter && perimeter.length) {
         // start dragging closest vertex if within threshold
         const canvas = canvasRef.current; if (!canvas) return;
         const rect = canvas.getBoundingClientRect();
@@ -2328,7 +2415,7 @@ export default function FloorplanCanvas({
           return;
         }
       }
-  if ((mode === 'edit-hole' || mode==='refine') && holes.length) {
+      if ((mode === 'edit-hole' || mode==='refine') && holes.length) {
         const canvas = canvasRef.current; if (!canvas) return;
         const rect = canvas.getBoundingClientRect();
         let cx = (e.clientX - rect.left) * (canvas.width / rect.width);
@@ -2348,13 +2435,13 @@ export default function FloorplanCanvas({
         if (best.vi >= 0 && best.d <= thr) {
           pushHistory();
           draggingVertexIdxRef.current = best.vi;
-      draggingHoleIndexRef.current = best.hi;
-      draggingTargetRef.current = 'hole';
-      setEditHoleIndex(best.hi);
+          draggingHoleIndexRef.current = best.hi;
+          draggingTargetRef.current = 'hole';
+          setEditHoleIndex(best.hi);
           return;
         }
       }
-      
+
       // Antenna interactions: Alt=delete, Ctrl=select, else drag if near
       if (mode === 'antenna' && antennas.length > 0) {
         const canvas = canvasRef.current; if (!canvas) return;
@@ -2446,6 +2533,33 @@ export default function FloorplanCanvas({
     }
   };
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (multiDeleteStartRef.current) {
+      const canvas = canvasRef.current; if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      let cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+      let cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+      const wx = (cx - pan.x) / zoom; const wy = (cy - pan.y) / zoom;
+      const start = multiDeleteStartRef.current;
+      const dxWorld = wx - start.x;
+      const dyWorld = wy - start.y;
+      const dxCanvas = Math.abs(dxWorld) * zoom;
+      const dyCanvas = Math.abs(dyWorld) * zoom;
+      const shouldActivate = Math.max(dxCanvas, dyCanvas) > MULTI_DELETE_ACTIVATION_PX;
+      if (shouldActivate) {
+        if (!multiDeleteActiveRef.current) {
+          multiDeleteActiveRef.current = true;
+          suppressClickRef.current = true;
+        }
+        const x = Math.min(start.x, wx);
+        const y = Math.min(start.y, wy);
+        const w = Math.abs(dxWorld);
+        const h = Math.abs(dyWorld);
+        setMultiDeleteRect({ x, y, w, h });
+      } else if (!multiDeleteActiveRef.current) {
+        setMultiDeleteRect(null);
+      }
+      return;
+    }
     if ((mode === 'edit-poly' || mode==='refine') && perimeter && draggingVertexIdxRef.current !== null && draggingTargetRef.current === 'perimeter') {
       const canvas = canvasRef.current; if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
@@ -2552,6 +2666,14 @@ export default function FloorplanCanvas({
   setPan(p => ({ x: Math.round(p.x + dx), y: Math.round(p.y + dy) }));
   };
   const handleMouseUp = () => { 
+    if (multiDeleteStartRef.current) {
+      if (multiDeleteActiveRef.current && multiDeleteRect) {
+        performMultiDelete(multiDeleteRect);
+      }
+      multiDeleteStartRef.current = null;
+      multiDeleteActiveRef.current = false;
+      setMultiDeleteRect(null);
+    }
     draggingVertexIdxRef.current = null;
     draggingHoleIndexRef.current = null;
     draggingAntennaIdRef.current = null;
@@ -2572,6 +2694,9 @@ export default function FloorplanCanvas({
     }
   };
   const handleMouseLeave = () => { 
+    multiDeleteStartRef.current = null;
+    multiDeleteActiveRef.current = false;
+    setMultiDeleteRect(null);
     isPanningRef.current = false; 
     setIsPanCursor(false); 
     if (suppressClickRef.current) {
