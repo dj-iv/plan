@@ -5,6 +5,7 @@ import FloorsPanel from './FloorsPanel';
 import useFixAutoPlaceButton from '@/hooks/useFixAutoPlaceButton';
 import { simpleAutoPlaceAntennas } from '@/utils/antennaUtils';
 import type { ScaleMetadata } from '@/types/project';
+import type { FloorNameAiStatus } from '@/types/ai';
 // Placement logic provided by antennaUtils.simpleAutoPlaceAntennas
 // Trim now runs in a Web Worker at /workers/trim-opencv.js to avoid blocking UI
 
@@ -32,6 +33,8 @@ interface FloorplanCanvasProps {
   onDeleteFloor?: (floorId: string) => void;
   onAddFloor?: () => void;
   floorsLoading?: boolean;
+  onDetectFloorName?: (floorId: string) => void;
+  floorNameAiStatus?: Record<string, FloorNameAiStatus>;
 }
 
 interface Point {
@@ -125,7 +128,9 @@ export default function FloorplanCanvas({
   onRenameFloor,
   onDeleteFloor,
   onAddFloor,
-  floorsLoading = false
+  floorsLoading = false,
+  onDetectFloorName,
+  floorNameAiStatus = {},
 }: FloorplanCanvasProps) {
   useEffect(() => {
     console.log('[Canvas] onSaveProject present:', typeof onSaveProject);
@@ -207,6 +212,9 @@ export default function FloorplanCanvas({
   // Antenna placement feature
   const [antennas, setAntennas] = useState<Antenna[]>([]);
   const [selectedAntennaId, setSelectedAntennaId] = useState<string | null>(null);
+  const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
+  const [screenshotMessage, setScreenshotMessage] = useState<string | null>(null);
+  const screenshotMessageTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     const updateHeight = () => {
@@ -228,6 +236,26 @@ export default function FloorplanCanvas({
     return () => {
       window.removeEventListener('resize', updateHeight);
       if (observer) observer.disconnect();
+    };
+  }, []);
+
+  const showScreenshotMessage = useCallback((message: string) => {
+    setScreenshotMessage(message);
+    if (screenshotMessageTimeoutRef.current !== null) {
+      window.clearTimeout(screenshotMessageTimeoutRef.current);
+    }
+    screenshotMessageTimeoutRef.current = window.setTimeout(() => {
+      setScreenshotMessage(null);
+      screenshotMessageTimeoutRef.current = null;
+    }, 2600);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (screenshotMessageTimeoutRef.current !== null) {
+        window.clearTimeout(screenshotMessageTimeoutRef.current);
+        screenshotMessageTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -293,7 +321,7 @@ export default function FloorplanCanvas({
   }, []);
   const [isDraggingAntenna, setIsDraggingAntenna] = useState<boolean>(false);
   const [isPlacingAntennas, setIsPlacingAntennas] = useState<boolean>(false); // Flag for auto-placement in progress
-  const [antennaRange, setAntennaRange] = useState<number>(8); // Default 8m range for better coverage
+  const [antennaRange, setAntennaRange] = useState<number>(7); // Default 7m range for better coverage
   const [antennaDensity, setAntennaDensity] = useState<number>(65); // Grid spacing percent relative to diameter (65% ≈ 35% overlap)
   const [previewAntennas, setPreviewAntennas] = useState<Antenna[]>([]); // For live preview
   const [placementMode, setPlacementMode] = useState<'coverage' | 'gap-first'>('gap-first');
@@ -2049,7 +2077,7 @@ export default function FloorplanCanvas({
     setSavedExclusions([]);
     setShowCoverage(true);
     setShowRadiusBoundary(true);
-    setAntennaRange(8);
+  setAntennaRange(7);
     setZoom(1);
     setPan({ x: 0, y: 0 });
 
@@ -3104,10 +3132,332 @@ export default function FloorplanCanvas({
   
   // Calculate total from both manual selections and saved areas
 
+  const captureAntennaScreenshot = useCallback(async () => {
+    if (isCapturingScreenshot) {
+      return;
+    }
+
+  const canvasEl = canvasRef.current;
+  const summaryEl = summaryRef.current;
+    if (!canvasEl) {
+      alert('Floorplan canvas is not available yet.');
+      return;
+    }
+    if (!summaryEl) {
+      alert('Summary panel is not visible, nothing to capture.');
+      return;
+    }
+
+    setIsCapturingScreenshot(true);
+    try {
+      const html2canvas = (await import('html2canvas')).default;
+      const floorplanCanvas = canvasEl;
+      if ((floorplanCanvas.width || 0) === 0 || (floorplanCanvas.height || 0) === 0) {
+        throw new Error('Floorplan canvas is not ready yet.');
+      }
+
+      const summaryScale = Math.min(2, window.devicePixelRatio || 1);
+      await document.fonts?.ready.catch(() => undefined);
+
+      const originalRect = summaryEl.getBoundingClientRect();
+      if ((originalRect.width || 0) === 0 || (originalRect.height || 0) === 0) {
+        throw new Error('Summary panel is not ready yet.');
+      }
+
+      const summaryClone = summaryEl.cloneNode(true) as HTMLElement;
+      const copyComputedStyles = (source: HTMLElement, target: HTMLElement) => {
+        const sourceStyles = window.getComputedStyle(source);
+        const targetStyle = target.style;
+        for (const property of sourceStyles) {
+          const value = sourceStyles.getPropertyValue(property);
+          const priority = sourceStyles.getPropertyPriority(property);
+          try {
+            targetStyle.setProperty(property, value, priority);
+          } catch {
+            // Ignore properties the browser refuses to set (rare)
+          }
+        }
+      };
+      copyComputedStyles(summaryEl, summaryClone);
+
+      const originalChildren = Array.from(summaryEl.querySelectorAll<HTMLElement>('*'));
+      const cloneChildren = Array.from(summaryClone.querySelectorAll<HTMLElement>('*'));
+      const childrenLength = Math.min(originalChildren.length, cloneChildren.length);
+      for (let i = 0; i < childrenLength; i += 1) {
+        copyComputedStyles(originalChildren[i], cloneChildren[i]);
+      }
+
+  const computedOriginal = window.getComputedStyle(summaryEl);
+  summaryClone.style.position = 'static';
+  summaryClone.style.left = 'auto';
+  summaryClone.style.right = 'auto';
+  summaryClone.style.top = 'auto';
+  summaryClone.style.bottom = 'auto';
+  summaryClone.style.width = `${originalRect.width}px`;
+  summaryClone.style.maxWidth = `${originalRect.width}px`;
+  summaryClone.style.minWidth = `${originalRect.width}px`;
+  summaryClone.style.margin = '0';
+  summaryClone.style.opacity = '1';
+  summaryClone.style.transform = 'none';
+  summaryClone.style.filter = 'none';
+  summaryClone.style.pointerEvents = 'auto';
+  summaryClone.style.boxShadow = computedOriginal?.boxShadow || 'none';
+  summaryClone.style.background = computedOriginal?.background || '#ffffff';
+  summaryClone.style.borderRadius = computedOriginal?.borderRadius || summaryClone.style.borderRadius;
+  summaryClone.style.display = 'block';
+
+  const stagingContainer = document.createElement('div');
+  stagingContainer.style.position = 'fixed';
+  stagingContainer.style.left = '-10000px';
+  stagingContainer.style.top = '-10000px';
+  stagingContainer.style.width = `${originalRect.width}px`;
+  stagingContainer.style.height = 'auto';
+  stagingContainer.style.overflow = 'visible';
+  stagingContainer.style.zIndex = '-1';
+  stagingContainer.style.background = 'transparent';
+  stagingContainer.appendChild(summaryClone);
+      document.body.appendChild(stagingContainer);
+
+      const pickGradientFallbackColor = (gradient: string, fallback: string): string => {
+        const colorMatch = gradient.match(/(rgba?\([^\)]+\)|#[0-9a-fA-F]{3,8})/);
+        if (colorMatch && colorMatch[0]) {
+          return colorMatch[0];
+        }
+        return fallback;
+      };
+
+      const sanitizeGradients = (root: HTMLElement) => {
+        const overrides: Array<{ element: HTMLElement; backgroundImage: string; backgroundColor: string }> = [];
+        const stack: HTMLElement[] = [root];
+        while (stack.length) {
+          const el = stack.pop()!;
+          const style = window.getComputedStyle(el);
+          const bgImage = style?.backgroundImage || '';
+          if (bgImage.includes('gradient')) {
+            overrides.push({
+              element: el,
+              backgroundImage: el.style.backgroundImage,
+              backgroundColor: el.style.backgroundColor,
+            });
+            el.style.backgroundImage = 'none';
+            const computedColor = style?.backgroundColor && style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent'
+              ? style.backgroundColor
+              : undefined;
+            el.style.backgroundColor = pickGradientFallbackColor(bgImage, computedColor || '#2563eb');
+          }
+          Array.from(el.children).forEach(child => {
+            if (child instanceof HTMLElement) stack.push(child);
+          });
+        }
+        return overrides;
+      };
+
+      const restoreGradients = (overrides: Array<{ element: HTMLElement; backgroundImage: string; backgroundColor: string }>) => {
+        overrides.forEach(({ element, backgroundImage, backgroundColor }) => {
+          element.style.backgroundImage = backgroundImage;
+          element.style.backgroundColor = backgroundColor;
+        });
+      };
+
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      let summaryCanvas: HTMLCanvasElement;
+      const cloneOverrides = sanitizeGradients(summaryClone);
+      try {
+        summaryCanvas = await html2canvas(summaryClone, {
+          backgroundColor: '#ffffff',
+          scale: summaryScale,
+          useCORS: true,
+          logging: false,
+          removeContainer: true,
+          width: Math.round(summaryClone.offsetWidth || originalRect.width),
+          height: Math.round(summaryClone.offsetHeight || originalRect.height),
+          scrollX: 0,
+          scrollY: 0,
+          foreignObjectRendering: true,
+          ignoreElements: element => element?.getAttribute?.('data-ignore-screenshot') === 'true',
+        });
+      } finally {
+        restoreGradients(cloneOverrides);
+      }
+
+      if ((summaryCanvas.width || 0) === 0 || (summaryCanvas.height || 0) === 0) {
+        console.warn('html2canvas produced empty summary canvas; falling back to live summary element.');
+        const summaryRect = summaryEl.getBoundingClientRect();
+        const originalOverrides = sanitizeGradients(summaryEl);
+        try {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          summaryCanvas = await html2canvas(summaryEl, {
+            backgroundColor: '#ffffff',
+            scale: summaryScale,
+            useCORS: true,
+            logging: false,
+            width: Math.round(summaryEl.offsetWidth || summaryRect.width || originalRect.width),
+            height: Math.round(summaryEl.offsetHeight || summaryRect.height || originalRect.height),
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            foreignObjectRendering: true,
+            ignoreElements: element => element?.getAttribute?.('data-ignore-screenshot') === 'true',
+          });
+        } finally {
+          restoreGradients(originalOverrides);
+        }
+      }
+
+      stagingContainer.remove();
+
+      let summaryRenderCanvas: HTMLCanvasElement = summaryCanvas;
+      if ((summaryCanvas.width || 0) === 0 || (summaryCanvas.height || 0) === 0) {
+  console.warn('Summary element screenshot fallback reduced to text rendering.');
+  const summaryTextLines = summaryEl.innerText
+          .split(/\n+/)
+          .map(line => line.trim())
+          .filter(line => line.length > 0);
+        const rect = summaryEl.getBoundingClientRect();
+        const fallbackWidth = Math.max(400, Math.round(rect.width) || 0);
+        const paddingX = 28;
+        const paddingY = 32;
+        const lineHeight = 22;
+        const scaleFactor = summaryScale > 0 ? summaryScale : 1;
+        const contentWidth = fallbackWidth - paddingX * 2;
+
+        const fallbackCanvas = document.createElement('canvas');
+        fallbackCanvas.width = Math.max(320, Math.round(fallbackWidth * scaleFactor));
+        fallbackCanvas.height = Math.max(220, Math.round((summaryTextLines.length * lineHeight + paddingY * 2) * scaleFactor));
+        const fallbackCtx = fallbackCanvas.getContext('2d');
+        if (!fallbackCtx) {
+          throw new Error('Summary panel is not ready yet.');
+        }
+
+        fallbackCtx.scale(scaleFactor, scaleFactor);
+        fallbackCtx.fillStyle = '#ffffff';
+        fallbackCtx.fillRect(0, 0, fallbackCanvas.width / scaleFactor, fallbackCanvas.height / scaleFactor);
+        fallbackCtx.fillStyle = '#0f172a';
+        fallbackCtx.font = '16px "Inter", sans-serif';
+        fallbackCtx.textBaseline = 'top';
+
+        let textY = paddingY;
+        const wrapLine = (line: string): string[] => {
+          const words = line.split(/\s+/);
+          const wrapped: string[] = [];
+          let currentLine = '';
+          for (const word of words) {
+            const testLine = currentLine ? `${currentLine} ${word}` : word;
+            const measured = fallbackCtx.measureText(testLine).width / scaleFactor;
+            if (measured > contentWidth && currentLine) {
+              wrapped.push(currentLine);
+              currentLine = word;
+            } else {
+              currentLine = testLine;
+            }
+          }
+          if (currentLine) {
+            wrapped.push(currentLine);
+          }
+          return wrapped.length ? wrapped : [''];
+        };
+
+        summaryTextLines.forEach(line => {
+          const wrapped = wrapLine(line);
+          wrapped.forEach(seg => {
+            fallbackCtx.fillText(seg, paddingX, textY);
+            textY += lineHeight;
+          });
+          textY += 6;
+        });
+
+        summaryRenderCanvas = fallbackCanvas;
+      }
+      const margin = 48;
+      const gap = 40;
+      const summaryPadding = 28;
+
+  const floorplanWidth = floorplanCanvas.width || canvasSize.width;
+  const floorplanHeight = floorplanCanvas.height || canvasSize.height;
+  const summaryWidth = summaryRenderCanvas.width;
+  const summaryHeight = summaryRenderCanvas.height;
+
+  const exportCanvas = document.createElement('canvas');
+  exportCanvas.width = floorplanWidth + summaryWidth + margin * 2 + gap + summaryPadding * 2;
+  exportCanvas.height = Math.max(floorplanHeight, summaryHeight + summaryPadding * 2) + margin * 2;
+      const ctx = exportCanvas.getContext('2d');
+      if (!ctx) {
+        throw new Error('Unable to create export context');
+      }
+
+      ctx.fillStyle = '#0b1220';
+      ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+
+      const floorplanX = margin;
+      const floorplanY = margin;
+      ctx.drawImage(floorplanCanvas, floorplanX, floorplanY);
+
+  const summaryX = floorplanX + floorplanWidth + gap;
+  const summaryY = margin + Math.max(0, (floorplanHeight - (summaryHeight + summaryPadding * 2)) / 2);
+
+      ctx.save();
+      ctx.shadowColor = 'rgba(15,23,42,0.35)';
+      ctx.shadowBlur = 36;
+      ctx.shadowOffsetY = 12;
+      ctx.fillStyle = '#0b1220';
+    ctx.fillRect(summaryX - summaryPadding, summaryY - summaryPadding, summaryWidth + summaryPadding * 2, summaryHeight + summaryPadding * 2);
+      ctx.restore();
+
+      ctx.fillStyle = '#ffffff';
+  ctx.fillRect(summaryX - summaryPadding, summaryY - summaryPadding, summaryWidth + summaryPadding * 2, summaryHeight + summaryPadding * 2);
+  ctx.drawImage(summaryRenderCanvas, summaryX, summaryY, summaryWidth, summaryHeight);
+
+      const exportBlob = await new Promise<Blob | null>(resolve => exportCanvas.toBlob(resolve, 'image/png', 0.95));
+      const dataUrl = exportBlob ? null : exportCanvas.toDataURL('image/png');
+
+      if (!exportBlob && !dataUrl) {
+        throw new Error('Failed to encode screenshot.');
+      }
+
+      let copied = false;
+      const clipboardItemCtor = typeof window !== 'undefined' ? (window as any).ClipboardItem : undefined;
+      if (exportBlob && navigator.clipboard && 'write' in navigator.clipboard && clipboardItemCtor) {
+        try {
+          const item = new clipboardItemCtor({ 'image/png': exportBlob });
+          await navigator.clipboard.write([item]);
+          copied = true;
+          showScreenshotMessage('Screenshot copied to clipboard');
+        } catch (err) {
+          console.warn('Clipboard write failed, falling back to download', err);
+        }
+      }
+
+      if (!copied) {
+        const link = document.createElement('a');
+        const href = exportBlob ? URL.createObjectURL(exportBlob) : (dataUrl as string);
+        link.href = href;
+        link.download = `floorplan-${Date.now()}.png`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        if (exportBlob) {
+          setTimeout(() => URL.revokeObjectURL(href), 5000);
+        }
+        showScreenshotMessage('Screenshot downloaded');
+      }
+    } catch (error) {
+      console.error('Failed to capture antenna screenshot', error);
+      alert('Unable to capture the screenshot. Please try again.');
+    } finally {
+      setIsCapturingScreenshot(false);
+    }
+  }, [
+    isCapturingScreenshot,
+    showScreenshotMessage,
+  ]);
+
   const content = (
     <div className="flex flex-col relative h-full min-h-0">
       {/* Controls */}
-  <div ref={controlsRef} className="bg-gradient-to-r from-blue-500 to-orange-500 px-6 py-4 flex flex-col gap-3">
+  <div
+        ref={controlsRef}
+        className="bg-gradient-to-r from-blue-500 to-orange-500 px-6 py-4 flex flex-col gap-3"
+      >
         <div className="flex w-full flex-wrap items-start gap-3">
           <div className="flex flex-wrap items-center gap-3 flex-1 min-w-0">
           <button type="button"
@@ -3533,12 +3883,32 @@ export default function FloorplanCanvas({
               >
                 Clear Antennas
               </button>
+              <button
+                type="button"
+                onClick={captureAntennaScreenshot}
+                disabled={isCapturingScreenshot}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm ${
+                  isCapturingScreenshot
+                    ? 'bg-white/40 text-slate-600 cursor-progress'
+                    : 'bg-indigo-500 text-white hover:bg-indigo-600'
+                }`}
+                title="Capture the current antenna layout with summary"
+              >
+                {isCapturingScreenshot ? 'Capturing…' : 'Screenshot'}
+              </button>
               {antennas.length > 0 && (
                 <div className="text-white/90 text-sm bg-white/10 px-3 py-1.5 rounded-lg backdrop-blur-sm">
                   <span className="font-medium">{antennas.length}</span> antenna{antennas.length !== 1 ? 's' : ''} placed
                 </div>
               )}
             </div>
+
+            {screenshotMessage && (
+              <div data-ignore-screenshot="true" className="flex items-center gap-2 rounded-md bg-white/15 px-3 py-2 text-sm text-white/95 shadow-sm">
+                <span role="img" aria-label="Camera">📸</span>
+                <span>{screenshotMessage}</span>
+              </div>
+            )}
 
             {selectedAntennaId && (
               <div className="flex flex-wrap items-center gap-3 text-xs text-white/80 border-t border-white/10 pt-2 mt-1">
@@ -3683,6 +4053,8 @@ export default function FloorplanCanvas({
             onDeleteFloor={onDeleteFloor || (() => {})}
             onAddFloor={onAddFloor || (() => {})}
             isLoading={floorsLoading}
+            onDetectFloorName={onDetectFloorName}
+            aiNameStatus={floorNameAiStatus}
             className="flex-1 overflow-y-auto pr-1"
           />
         </div>

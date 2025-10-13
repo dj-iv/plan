@@ -12,6 +12,7 @@ import NameProjectModal from '@/components/NameProjectModal';
 import { ProjectService } from '@/services/projectService';
 import { FloorService } from '@/services/floorService';
 import { CanvasState, ProjectSummary, FloorSummary, FloorData, FloorEntry, Units, ProjectEngineer } from '@/types/project';
+import { FloorNameAiStatus, FloorNameAiResponse } from '@/types/ai';
 import { captureCanvasThumbnail } from '@/utils/thumbnail';
 import { computeFloorStatistics, normaliseUnit } from '@/utils/floorStats';
 import { onAuthChange, signInWithGoogle, signOutUser, getCurrentUser, ensureAnonymousAuth } from '@/lib/firebaseAuth';
@@ -22,7 +23,6 @@ declare global {
     'request-save': CustomEvent<void>;
   }
 }
-
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [imageUrl, setImageUrl] = useState<string>("");
@@ -46,11 +46,13 @@ export default function Home() {
   const [search, setSearch] = useState<string>('');
   const [sortBy, setSortBy] = useState<'lastOpened'|'name'|'antennas'>('lastOpened');
   const [authEmail, setAuthEmail] = useState<string | null>(null);
-  const [currentEngineer, setCurrentEngineer] = useState<ProjectEngineer | null>(null);
+  const [, setCurrentEngineer] = useState<ProjectEngineer | null>(null);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
   const [logoPxWidth, setLogoPxWidth] = useState<number | null>(null);
   const logoSource = '/uctel-logo.png';
   const [showLogo, setShowLogo] = useState<boolean>(true);
+  const [floorNameAiStatuses, setFloorNameAiStatuses] = useState<Record<string, FloorNameAiStatus>>({});
+  const autoFloorNameAttemptsRef = useRef<Set<string>>(new Set());
 
   const deriveEngineer = useCallback((input?: { displayName?: string | null; email?: string | null; uid?: string | null }): ProjectEngineer | null => {
     if (!input) return null;
@@ -76,8 +78,8 @@ export default function Home() {
     };
   }, []);
 
-  const resolveEngineerName = useCallback((engineer?: ProjectEngineer | null): string => {
-    if (!engineer) return 'Unknown engineer';
+  const resolveOwnerName = useCallback((engineer?: ProjectEngineer | null): string => {
+    if (!engineer) return 'Unknown owner';
     if (engineer.displayName && engineer.displayName.trim().length > 0) {
       return engineer.displayName.trim();
     }
@@ -92,7 +94,7 @@ export default function Home() {
           .join(' ');
       }
     }
-    return 'Unknown engineer';
+    return 'Unknown owner';
   }, []);
   
   // Multi-floor state
@@ -130,6 +132,15 @@ export default function Home() {
       ? metadata.thumbnailUrl
       : null;
     return fallbackThumb;
+  }, []);
+
+  const fileToDataUrl = useCallback((file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+      reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
   }, []);
 
   const handleLogoLoadError = useCallback(() => {
@@ -258,6 +269,12 @@ export default function Home() {
     });
 
     setFloors(additions);
+    const nextStatuses: Record<string, FloorNameAiStatus> = {};
+    additions.forEach(item => {
+      nextStatuses[item.id] = { status: 'idle' };
+    });
+    setFloorNameAiStatuses(nextStatuses);
+    autoFloorNameAttemptsRef.current.clear();
 
     const first = additions[0];
     setCurrentFloorId(first.id);
@@ -294,6 +311,8 @@ export default function Home() {
     setShowFloorUpload(false);
     floorStateHashesRef.current.clear();
     setCanvasInstanceKey(0);
+    setFloorNameAiStatuses({});
+    autoFloorNameAttemptsRef.current.clear();
   }, []);
 
   const loadProjects = useCallback(async () => {
@@ -417,6 +436,14 @@ export default function Home() {
       }
       entries.sort((a, b) => a.orderIndex - b.orderIndex);
       setFloors(entries);
+      const statusMap: Record<string, FloorNameAiStatus> = {};
+      entries.forEach(entry => {
+        statusMap[entry.id] = { status: 'idle' };
+      });
+      setFloorNameAiStatuses(statusMap);
+      entries.forEach(entry => {
+        autoFloorNameAttemptsRef.current.add(entry.id);
+      });
 
       if (!currentFloorId && entries.length > 0) {
         setCurrentFloorId(entries[0].id);
@@ -523,6 +550,14 @@ export default function Home() {
       });
 
       setFloors(prev => [...prev, ...additions]);
+      setFloorNameAiStatuses(prev => {
+        const next = { ...prev } as Record<string, FloorNameAiStatus>;
+        additions.forEach(item => {
+          next[item.id] = { status: 'idle' };
+          autoFloorNameAttemptsRef.current.delete(item.id);
+        });
+        return next;
+      });
 
       if (!currentFloorId && additions.length > 0) {
         const first = additions[0];
@@ -617,6 +652,11 @@ export default function Home() {
             const updated = [...prev, toFloorEntry(floorData)];
             return updated.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
           });
+          setFloorNameAiStatuses(prev => ({
+            ...prev,
+            [floorData.id]: { status: 'idle' },
+          }));
+          autoFloorNameAttemptsRef.current.delete(floorData.id);
         }
 
         if (!hadExistingFloors && i === 0) {
@@ -672,10 +712,141 @@ export default function Home() {
     }
   }, [currentProjectId, loadFloors, updateFloorEntry]);
 
+  const handleDetectFloorName = useCallback(async (floorId: string) => {
+    const entry = floors.find(f => f.id === floorId);
+    if (!entry) {
+      return;
+    }
+
+    setFloorNameAiStatuses(prev => ({
+      ...prev,
+      [floorId]: { status: 'loading' },
+    }));
+
+    try {
+      let imageReference: string | null = null;
+      if (entry.imageUrl && !entry.imageUrl.startsWith('blob:')) {
+        imageReference = entry.imageUrl;
+      }
+
+      if (!imageReference && entry.imageFile) {
+        imageReference = await fileToDataUrl(entry.imageFile);
+      }
+
+      if (!imageReference && currentFloorId === floorId && imageUrl && !imageUrl.startsWith('blob:')) {
+        imageReference = imageUrl;
+      }
+
+      if (!imageReference && entry.imageFile) {
+        imageReference = await fileToDataUrl(entry.imageFile);
+      }
+
+      if (!imageReference) {
+        throw new Error('Floor image is not available for AI analysis.');
+      }
+
+      const response = await fetch('/api/ai/floor-label', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageUrl: imageReference,
+          currentName: entry.name,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        const message = typeof body.error === 'string' ? body.error : `AI request failed with status ${response.status}`;
+        throw new Error(message);
+      }
+
+      const result = await response.json() as FloorNameAiResponse;
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      const suggestedNameRaw = typeof result.floorName === 'string' ? result.floorName.trim() : '';
+      const confidence = typeof result.confidence === 'number' ? result.confidence : undefined;
+      const reason = typeof result.reasoning === 'string' ? result.reasoning : undefined;
+      const fallbackMessage = result.raw || reason || 'No label identified.';
+
+      if (!suggestedNameRaw) {
+        setFloorNameAiStatuses(prev => ({
+          ...prev,
+          [floorId]: { status: 'error', error: fallbackMessage },
+        }));
+        return;
+      }
+
+      const isDifferent = suggestedNameRaw.localeCompare(entry.name, undefined, { sensitivity: 'base' }) !== 0;
+      if (isDifferent) {
+        await handleRenameFloor(floorId, suggestedNameRaw);
+      } else {
+        setInfoMessage(`AI confirmed "${suggestedNameRaw}"`);
+        setTimeout(() => setInfoMessage(null), 2000);
+      }
+
+      setFloorNameAiStatuses(prev => ({
+        ...prev,
+        [floorId]: {
+          status: 'success',
+          suggestedName: suggestedNameRaw,
+          confidence,
+          reason,
+        },
+      }));
+    } catch (error) {
+      console.error('Failed to detect floor name', error);
+      const message = error instanceof Error ? error.message : 'Unknown AI error.';
+      setFloorNameAiStatuses(prev => ({
+        ...prev,
+        [floorId]: { status: 'error', error: message },
+      }));
+      setInfoMessage(message);
+      setTimeout(() => setInfoMessage(null), 2000);
+    }
+  }, [floors, fileToDataUrl, currentFloorId, imageUrl, handleRenameFloor]);
+
+  const handleDetectFloorNameManual = useCallback((floorId: string) => {
+    autoFloorNameAttemptsRef.current.delete(floorId);
+    void handleDetectFloorName(floorId);
+  }, [handleDetectFloorName]);
+
+  useEffect(() => {
+    const statuses = floorNameAiStatuses;
+    const anyLoading = Object.values(statuses).some(status => status?.status === 'loading');
+    if (anyLoading) {
+      return;
+    }
+
+    const nextFloor = floors.find(floor => {
+      const status = statuses[floor.id];
+      const isIdle = !status || status.status === 'idle';
+      if (!isIdle) {
+        return false;
+      }
+      if (autoFloorNameAttemptsRef.current.has(floor.id)) {
+        return false;
+      }
+      return true;
+    });
+
+    if (nextFloor) {
+      autoFloorNameAttemptsRef.current.add(nextFloor.id);
+      void handleDetectFloorName(nextFloor.id);
+    }
+  }, [floors, floorNameAiStatuses, handleDetectFloorName]);
+
   const handleDeleteFloor = useCallback(async (floorId: string) => {
     if (!currentProjectId) {
       setFloors(prev => prev.filter(f => f.id !== floorId));
       floorStateHashesRef.current.delete(floorId);
+      setFloorNameAiStatuses(prev => {
+        const next = { ...prev };
+        delete next[floorId];
+        return next;
+      });
+      autoFloorNameAttemptsRef.current.delete(floorId);
       if (floorId === currentFloorId) {
         const remaining = floors.filter(f => f.id !== floorId);
         if (remaining.length > 0) {
@@ -697,6 +868,12 @@ export default function Home() {
       const remainingFloors = floors.filter(f => f.id !== floorId);
       setFloors(remainingFloors);
       floorStateHashesRef.current.delete(floorId);
+      setFloorNameAiStatuses(prev => {
+        const next = { ...prev };
+        delete next[floorId];
+        return next;
+      });
+      autoFloorNameAttemptsRef.current.delete(floorId);
 
       if (floorId === currentFloorId) {
         if (remainingFloors.length > 0) {
@@ -1226,7 +1403,7 @@ export default function Home() {
                   const selected = selectedProjectIds.has(project.id);
                   const last = project.lastOpenedAt || project.updatedAt || project.createdAt;
                   const lastLabel = 'Last opened';
-                  const engineerName = resolveEngineerName(project.engineer ?? currentEngineer);
+                  const ownerName = resolveOwnerName(project.engineer);
                   return (
                     <li
                       key={project.id}
@@ -1259,7 +1436,7 @@ export default function Home() {
                           <div className="flex items-center justify-between">
                             <h3 className="font-medium text-gray-900 pr-4 break-words">{project.name}</h3>
                             <div className="flex items-center gap-3">
-                              <span className="text-xs text-gray-500 whitespace-nowrap">Engineer: {engineerName}</span>
+                              <span className="text-xs text-gray-500 whitespace-nowrap">Owner: {ownerName}</span>
                               <span className="text-xs text-gray-500 whitespace-nowrap">{lastLabel}: {last.toLocaleString()}</span>
                               {isLoading && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600" />}
                             </div>
@@ -1424,6 +1601,8 @@ export default function Home() {
           onDeleteFloor={handleDeleteFloor}
           onAddFloor={handleAddFloor}
           floorsLoading={floorsLoading}
+          onDetectFloorName={handleDetectFloorNameManual}
+          floorNameAiStatus={floorNameAiStatuses}
         />
       )}
 

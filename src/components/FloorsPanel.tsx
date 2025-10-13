@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import Image from 'next/image';
 import { FloorSummary, Units } from '@/types/project';
+import { FloorNameAiStatus } from '@/types/ai';
 
 interface FloorsPanelProps {
   floors: FloorSummary[];
@@ -12,6 +13,8 @@ interface FloorsPanelProps {
   isLoading?: boolean;
   formatAreaValue?: (areaSqMeters: number, preferredUnit?: Units) => string;
   className?: string;
+  onDetectFloorName?: (floorId: string) => void;
+  aiNameStatus?: Record<string, FloorNameAiStatus>;
 }
 
 export default function FloorsPanel({
@@ -24,6 +27,8 @@ export default function FloorsPanel({
   isLoading = false,
   formatAreaValue,
   className = '',
+  onDetectFloorName,
+  aiNameStatus,
 }: FloorsPanelProps) {
   const [expandedFloorId, setExpandedFloorId] = useState<string | null>(null);
   const [editingFloor, setEditingFloor] = useState<string | null>(null);
@@ -140,6 +145,10 @@ export default function FloorsPanel({
               const isExpanded = expandedFloorId === floor.id;
               const isCurrent = floor.id === currentFloorId;
               const isEditing = editingFloor === floor.id;
+              const aiStatus = aiNameStatus?.[floor.id];
+              const aiLoading = aiStatus?.status === 'loading';
+              const aiError = aiStatus?.status === 'error' ? aiStatus.error || aiStatus.reason : null;
+              const aiSuccess = aiStatus?.status === 'success';
 
               const areaLabel = formatArea(floor.totalArea || 0, floor.units);
               const areaSummaries = floor.areaSummaries || [];
@@ -208,6 +217,19 @@ export default function FloorsPanel({
 
                       {/* Actions */}
                       <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                        {onDetectFloorName && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDetectFloorName(floor.id);
+                            }}
+                            className={`p-1 rounded text-indigo-500 hover:text-indigo-600 hover:bg-indigo-50 ${aiLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
+                            title={aiLoading ? 'Detecting floor name...' : 'Retry AI floor naming'}
+                            disabled={aiLoading}
+                          >
+                            <span className="text-[10px] font-semibold tracking-wide">AI</span>
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -243,6 +265,19 @@ export default function FloorsPanel({
                     {/* Expanded Details */}
                     {isExpanded && (
                       <div className="mt-3 pt-3 border-t border-gray-200">
+                        {aiStatus && (
+                          <div className="mb-2 text-xs">
+                            {aiLoading && (
+                              <span className="text-indigo-600">Detecting floor name...</span>
+                            )}
+                            {aiSuccess && aiStatus.suggestedName && (
+                              <span className="text-emerald-600">AI suggestion: <span className="font-semibold">{aiStatus.suggestedName}</span>{typeof aiStatus.confidence === 'number' ? ` (${Math.round(aiStatus.confidence * 100)}% sure)` : ''}</span>
+                            )}
+                            {aiError && (
+                              <span className="text-rose-600">AI hint: {aiError}</span>
+                            )}
+                          </div>
+                        )}
                         <div className="text-xs text-gray-600 space-y-2">
                           <div className="font-semibold text-gray-700">Areas</div>
                           {areaSummaries.length === 0 ? (

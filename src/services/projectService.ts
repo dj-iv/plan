@@ -100,6 +100,20 @@ export class ProjectService {
     const uid = auth.currentUser?.uid;
     if (!uid) throw new Error('Authentication required to save projects.');
     const engineer = buildEngineerFromUser(auth.currentUser);
+    const docRef = doc(db, PROJECTS_COLLECTION, projectId);
+
+    let preservedEngineer: ProjectEngineer | undefined = undefined;
+    if (existingProjectId) {
+      try {
+        const existingSnap = await getDoc(docRef);
+        if (existingSnap.exists()) {
+          preservedEngineer = normaliseEngineer(existingSnap.data()?.engineer);
+        }
+      } catch (err) {
+        console.warn('ProjectService: failed to retrieve existing owner for project', projectId, err);
+      }
+    }
+    const owner = preservedEngineer || engineer;
     // Owner scoping removed; access is controlled via Google domain auth + rules
 
     let imageUrl: string | null = null;
@@ -160,7 +174,7 @@ export class ProjectService {
       updatedAt: Timestamp.fromDate(now),
        lastOpenedAt: Timestamp.fromDate(now),
       version: 1,
-      engineer,
+      engineer: owner,
       metadata: {
         originalFileName,
         fileSize,
@@ -174,7 +188,7 @@ export class ProjectService {
       settings: projectData.settings,
     });
 
-    await setDoc(doc(db, PROJECTS_COLLECTION, projectId), project, { merge: true });
+  await setDoc(docRef, project, { merge: true });
     return projectId;
   }
 
