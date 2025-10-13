@@ -28,6 +28,17 @@ export function convertAreaToUnit(areaSqMeters: number, unit: Units): number {
 
 export function computeFloorStatistics(canvasState: CanvasState): { stats: FloorStatistics; units: Units } {
   const antennas = canvasState.antennas?.length ?? 0;
+  const antennaRanges = (canvasState.antennas || [])
+    .map(a => a?.range)
+    .filter((range): range is number => typeof range === 'number' && !Number.isNaN(range) && range > 0);
+
+  let antennaRange: number | null = null;
+  if (typeof canvasState.antennaRange === 'number' && !Number.isNaN(canvasState.antennaRange)) {
+    antennaRange = canvasState.antennaRange;
+  } else if (antennaRanges.length > 0) {
+    const total = antennaRanges.reduce((sum, value) => sum + value, 0);
+    antennaRange = total / antennaRanges.length;
+  }
 
   const selectionAreas = (canvasState.selections || [])
     .filter(entry => typeof entry.value === 'number')
@@ -60,6 +71,7 @@ export function computeFloorStatistics(canvasState: CanvasState): { stats: Floor
     areaCount,
     totalArea,
     areaSummaries: areas,
+    antennaRange,
   };
 
   const units = normaliseUnit(canvasState.scaleUnit);

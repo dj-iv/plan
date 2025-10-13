@@ -213,6 +213,7 @@ export default function Home() {
       totalArea: entry.stats.totalArea,
       units: entry.units,
       areaSummaries: entry.stats.areaSummaries,
+      antennaRange: entry.stats.antennaRange,
     })),
   [floors]);
   // persist search/sort
@@ -258,7 +259,7 @@ export default function Home() {
         imageUrl: preview,
         imageFile: item.file,
         canvasState: blankState,
-        stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [] },
+  stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [], antennaRange: null },
         units: normaliseUnit(unit as Units),
         scale: null,
         dirty: true,
@@ -539,7 +540,7 @@ export default function Home() {
           imageUrl: preview,
           imageFile: item.file,
           canvasState: blankState,
-          stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [] },
+          stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [], antennaRange: null },
           units: normaliseUnit(unit as Units),
           scale: null,
           dirty: true,

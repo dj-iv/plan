@@ -139,6 +139,7 @@ export class FloorService {
         totalArea: stats.totalArea,
         units,
         areaSummaries: stats.areaSummaries,
+        antennaRange: stats.antennaRange,
       });
     });
     return list.sort((a,b)=> a.orderIndex - b.orderIndex);

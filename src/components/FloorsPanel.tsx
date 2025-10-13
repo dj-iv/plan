@@ -60,6 +60,29 @@ export default function FloorsPanel({
     return `${value.toFixed(precision)} ${label}`;
   }, [formatAreaValue]);
 
+  const formatRadius = useCallback((radiusMeters?: number | null, units?: Units) => {
+    if (typeof radiusMeters !== 'number' || Number.isNaN(radiusMeters) || radiusMeters <= 0) {
+      return '—';
+    }
+
+    const unitKey = (units || 'meters') as Units;
+    const { value, label } = (() => {
+      switch (unitKey) {
+        case 'feet':
+          return { value: radiusMeters * 3.28084, label: 'ft' };
+        case 'cm':
+          return { value: radiusMeters * 100, label: 'cm' };
+        case 'mm':
+          return { value: radiusMeters * 1000, label: 'mm' };
+        default:
+          return { value: radiusMeters, label: 'm' };
+      }
+    })();
+    const magnitude = Math.abs(value);
+    const precision = magnitude >= 100 ? 0 : magnitude >= 10 ? 1 : 2;
+    return `${value.toFixed(precision)} ${label}`;
+  }, []);
+
   useEffect(() => {
     if (currentFloorId) {
       setExpandedFloorId(currentFloorId);
@@ -152,6 +175,7 @@ export default function FloorsPanel({
 
               const areaLabel = formatArea(floor.totalArea || 0, floor.units);
               const areaSummaries = floor.areaSummaries || [];
+              const radiusLabel = formatRadius(floor.antennaRange, floor.units);
 
               const handleCardClick = () => {
                 onSelectFloor(floor.id);
@@ -212,6 +236,7 @@ export default function FloorsPanel({
                           <span className="font-medium text-gray-900">{areaLabel}</span>
                           <span>{floor.areaCount || 0} areas</span>
                           <span>{floor.antennaCount || 0} antennas</span>
+                          <span>Radius {radiusLabel}</span>
                         </div>
                       </div>
 

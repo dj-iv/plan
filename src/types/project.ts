@@ -134,6 +134,7 @@ export type FloorStatistics = {
   areaCount: number;
   totalArea: number;
   areaSummaries: FloorAreaSummary[];
+  antennaRange?: number | null;
 };
 
 export type SaveProjectRequest = {
@@ -224,6 +225,7 @@ export type FloorSummary = {
   totalArea: number;
   units?: Units;
   areaSummaries?: FloorAreaSummary[];
+  antennaRange?: number | null;
 };
 
 export type FloorEntry = {
