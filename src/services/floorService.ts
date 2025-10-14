@@ -140,6 +140,8 @@ export class FloorService {
         units,
         areaSummaries: stats.areaSummaries,
         antennaRange: stats.antennaRange,
+        pulsingAntennaCount: stats.pulsingAntennaCount,
+        pulsingAntennas: stats.pulsingAntennas,
       });
     });
     return list.sort((a,b)=> a.orderIndex - b.orderIndex);

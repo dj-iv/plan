@@ -1,4 +1,4 @@
-import { CanvasState, FloorStatistics, Units } from '@/types/project';
+import { CanvasState, FloorStatistics, PulsingAntennaSummary, Units } from '@/types/project';
 
 const AREA_CONVERSIONS: Record<string, number> = {
   meters: 1,
@@ -66,15 +66,34 @@ export function computeFloorStatistics(canvasState: CanvasState): { stats: Floor
   const totalArea = areas.reduce((sum, item) => sum + (item.area || 0), 0);
   const areaCount = areas.filter(item => (item.area ?? 0) > 0).length || areas.length;
 
+  const units = normaliseUnit(canvasState.scaleUnit);
+
+  const pulsingRaw = (canvasState.antennas || []).filter(a => a?.pulsing);
+  const pulsingAntennas: PulsingAntennaSummary[] = pulsingRaw.map((antenna, idx) => {
+    const id = antenna?.id || `antenna-${idx}`;
+    const label = antenna?.id ? `Antenna …${antenna.id.slice(-4)}` : `Antenna ${idx + 1}`;
+    const range = typeof antenna?.range === 'number' && Number.isFinite(antenna.range) ? antenna.range : null;
+    return {
+      id,
+      label,
+      range,
+      position: {
+        x: antenna?.position?.x ?? 0,
+        y: antenna?.position?.y ?? 0,
+      },
+    };
+  });
+  const pulsingAntennaCount = pulsingAntennas.length;
+
   const stats: FloorStatistics = {
     antennaCount: antennas,
     areaCount,
     totalArea,
     areaSummaries: areas,
     antennaRange,
+    pulsingAntennaCount,
+    pulsingAntennas: pulsingAntennas,
   };
-
-  const units = normaliseUnit(canvasState.scaleUnit);
 
   return { stats, units };
 }

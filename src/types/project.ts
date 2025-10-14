@@ -26,6 +26,7 @@ export type Antenna = {
   position: Point;
   range: number; // meters
   power?: number; // 0-100
+  pulsing?: boolean;
 };
 
 export type ScaleMetadata = {
@@ -58,6 +59,7 @@ export type CanvasState = {
   showCoverage?: boolean;
   showRadiusBoundary?: boolean;
   antennaRange?: number;
+  pulsingAntennaIds?: string[];
   scaleVertices?: Point[];
   selectedAreaVertices?: Point[];
   calculatedArea?: number | null;
@@ -129,12 +131,21 @@ export type FloorAreaSummary = {
   area: number;
 };
 
+export type PulsingAntennaSummary = {
+  id: string;
+  label: string;
+  range: number | null;
+  position: Point;
+};
+
 export type FloorStatistics = {
   antennaCount: number;
   areaCount: number;
   totalArea: number;
   areaSummaries: FloorAreaSummary[];
   antennaRange?: number | null;
+  pulsingAntennaCount?: number;
+  pulsingAntennas?: PulsingAntennaSummary[];
 };
 
 export type SaveProjectRequest = {
@@ -226,6 +237,8 @@ export type FloorSummary = {
   units?: Units;
   areaSummaries?: FloorAreaSummary[];
   antennaRange?: number | null;
+  pulsingAntennaCount?: number;
+  pulsingAntennas?: PulsingAntennaSummary[];
 };
 
 export type FloorEntry = {

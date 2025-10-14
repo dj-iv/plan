@@ -214,6 +214,8 @@ export default function Home() {
       units: entry.units,
       areaSummaries: entry.stats.areaSummaries,
       antennaRange: entry.stats.antennaRange,
+      pulsingAntennaCount: entry.stats.pulsingAntennaCount,
+      pulsingAntennas: entry.stats.pulsingAntennas,
     })),
   [floors]);
   // persist search/sort
@@ -259,7 +261,7 @@ export default function Home() {
         imageUrl: preview,
         imageFile: item.file,
         canvasState: blankState,
-  stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [], antennaRange: null },
+  stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [], antennaRange: null, pulsingAntennaCount: 0, pulsingAntennas: [] },
         units: normaliseUnit(unit as Units),
         scale: null,
         dirty: true,
@@ -540,7 +542,7 @@ export default function Home() {
           imageUrl: preview,
           imageFile: item.file,
           canvasState: blankState,
-          stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [], antennaRange: null },
+          stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [], antennaRange: null, pulsingAntennaCount: 0, pulsingAntennas: [] },
           units: normaliseUnit(unit as Units),
           scale: null,
           dirty: true,

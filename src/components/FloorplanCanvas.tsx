@@ -37,6 +37,7 @@ interface FloorplanCanvasProps {
   floorNameAiStatus?: Record<string, FloorNameAiStatus>;
 }
 
+
 interface Point {
   x: number;
   y: number;
@@ -213,14 +214,17 @@ export default function FloorplanCanvas({
   const [multiDeleteRect, setMultiDeleteRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const multiDeleteActiveRef = useRef(false);
   const MULTI_DELETE_ACTIVATION_PX = 4;
+  const antennaSelectStartRef = useRef<Point | null>(null);
+  const [antennaSelectRect, setAntennaSelectRect] = useState<{ x: number; y: number; w: number; h: number; mode: 'select' | 'delete' } | null>(null);
+  const antennaSelectModeRef = useRef<'select' | 'delete' | null>(null);
+  const antennaSelectActiveRef = useRef(false);
 
   // Antenna placement feature
   const [antennas, setAntennas] = useState<Antenna[]>([]);
-  const [selectedAntennaId, setSelectedAntennaId] = useState<string | null>(null);
+  const [selectedAntennaIds, setSelectedAntennaIds] = useState<string[]>([]);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const [screenshotMessage, setScreenshotMessage] = useState<string | null>(null);
   const screenshotMessageTimeoutRef = useRef<number | null>(null);
-
   useEffect(() => {
     const updateHeight = () => {
       if (controlsRef.current) {
@@ -328,6 +332,13 @@ export default function FloorplanCanvas({
     multiDeleteStartRef.current = null;
     multiDeleteActiveRef.current = false;
     setMultiDeleteRect(null);
+    antennaSelectStartRef.current = null;
+    antennaSelectModeRef.current = null;
+    antennaSelectActiveRef.current = false;
+    setAntennaSelectRect(null);
+    if (mode !== 'antenna') {
+      setSelectedAntennaIds([]);
+    }
   }, [mode]);
   const [isDraggingAntenna, setIsDraggingAntenna] = useState<boolean>(false);
   const [isPlacingAntennas, setIsPlacingAntennas] = useState<boolean>(false); // Flag for auto-placement in progress
@@ -720,7 +731,8 @@ export default function FloorplanCanvas({
     if (imageLoaded && image && canvasSize.width > 0) {
       drawCanvas();
     }
-  }, [imageLoaded, image, canvasSize, areas, currentArea, mode, calibrationPoints, calibrationAreaPoints, holes, excludeCurrent, autoHolesPreview, zoom, pan, roi, perimeter, antennas, previewAntennas, showCoverage, showRadiusBoundary, antennaRange, multiDeleteRect]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageLoaded, image, canvasSize, areas, currentArea, mode, calibrationPoints, calibrationAreaPoints, holes, excludeCurrent, autoHolesPreview, zoom, pan, roi, perimeter, antennas, previewAntennas, showCoverage, showRadiusBoundary, antennaRange, multiDeleteRect, antennaSelectRect, selectedAntennaIds]);
 
   useEffect(() => {
     if (!imageLoaded || !image) return;
@@ -1100,6 +1112,20 @@ export default function FloorplanCanvas({
     ctx.restore();
   }
 
+  if (antennaSelectRect && mode === 'antenna') {
+    ctx.save();
+    const isDelete = antennaSelectRect.mode === 'delete';
+    ctx.strokeStyle = isDelete ? 'rgba(239,68,68,0.9)' : 'rgba(59,130,246,0.9)';
+    ctx.fillStyle = isDelete ? 'rgba(239,68,68,0.12)' : 'rgba(59,130,246,0.12)';
+    ctx.setLineDash([5,3]);
+    ctx.lineWidth = Math.max(1, 1.5 / zoom);
+    ctx.beginPath();
+    ctx.rect(antennaSelectRect.x, antennaSelectRect.y, antennaSelectRect.w, antennaSelectRect.h);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // Draw detected perimeter polygon
   if (perimeter && perimeter.length >= 3) {
     ctx.save();
@@ -1230,6 +1256,7 @@ export default function FloorplanCanvas({
   if (antennas.length > 0) {
     // console.log("Drawing antennas:", antennas.length, "antennas found");
     ctx.save();
+    const selectedAntennaSet = new Set(selectedAntennaIds);
     
     // Draw coverage areas first (underneath the antenna icons)
     if (showCoverage && antennas.length > 0) {
@@ -1238,7 +1265,6 @@ export default function FloorplanCanvas({
         const { x, y } = antenna.position;
         const range = antenna.range;
         const power = (antenna.power || 50) / 100; // convert to 0-1 scale, default 50%
-        
         // Calculate the radius in pixels - Apply coordinate system transformation
         // The scale is in image coordinates, but antenna positions are in canvas coordinates
         const scaleX = image ? image.width / canvasSize.width : 1;
@@ -1272,11 +1298,11 @@ export default function FloorplanCanvas({
         
         // Create a green gradient for signal strength visualization - VERY VISIBLE
         const gradient = ctx.createRadialGradient(x, y, 0, x, y, visibleRadius);
-        gradient.addColorStop(0, `rgba(0, 200, 0, ${Math.max(0.8, 0.9 * power)})`); // Very dark green center, more opaque
-        gradient.addColorStop(0.3, `rgba(50, 255, 50, ${Math.max(0.6, 0.7 * power)})`); // Bright green
-        gradient.addColorStop(0.6, `rgba(100, 255, 100, ${Math.max(0.5, 0.5 * power)})`); // Light bright green  
-        gradient.addColorStop(0.9, `rgba(150, 255, 150, ${Math.max(0.3, 0.3 * power)})`); // Very light green
-        gradient.addColorStop(1, `rgba(150, 255, 150, ${Math.max(0.2, 0.15 * power)})`); // Still visible at edge
+  gradient.addColorStop(0, `rgba(0, 200, 0, ${Math.max(0.8, 0.9 * power)})`); // Very dark green center, more opaque
+  gradient.addColorStop(0.3, `rgba(50, 255, 50, ${Math.max(0.6, 0.7 * power)})`); // Bright green
+  gradient.addColorStop(0.6, `rgba(100, 255, 100, ${Math.max(0.5, 0.5 * power)})`); // Light bright green  
+  gradient.addColorStop(0.9, `rgba(150, 255, 150, ${Math.max(0.3, 0.3 * power)})`); // Very light green
+  gradient.addColorStop(1, `rgba(150, 255, 150, ${Math.max(0.2, 0.15 * power)})`); // Still visible at edge
         
         ctx.beginPath();
         ctx.arc(x, y, visibleRadius, 0, Math.PI * 2);
@@ -1294,7 +1320,7 @@ export default function FloorplanCanvas({
           ctx.stroke();
           ctx.setLineDash([]);
         }
-        
+
         // Display the range value in meters
         const textX = x + visibleRadius * 0.7;
         const textY = y - visibleRadius * 0.7;
@@ -1325,11 +1351,16 @@ export default function FloorplanCanvas({
     }
     for (const antenna of antennas) {
       const { x, y } = antenna.position;
-      const isSelected = antenna.id === selectedAntennaId;
+      const isSelected = selectedAntennaSet.has(antenna.id);
 
       // Draw Wi-Fi style antenna symbol - cleaner and more recognizable
       const iconSize = 14; // Optimal size for visibility and clarity      // Draw circular background for contrast
-      ctx.fillStyle = isSelected ? 'rgba(255, 140, 0, 0.95)' : 'rgba(59, 130, 246, 0.95)'; // Orange when selected, blue otherwise
+      const baseFill = isSelected
+        ? 'rgba(255, 140, 0, 0.95)'
+        : 'rgba(59, 130, 246, 0.95)';
+
+      ctx.save();
+      ctx.fillStyle = baseFill; // Orange when selected, blue otherwise
       ctx.beginPath();
       ctx.arc(x, y, iconSize/2 + 2, 0, 2 * Math.PI);
       ctx.fill();
@@ -1381,6 +1412,7 @@ export default function FloorplanCanvas({
           ctx.stroke();
         }
       }
+      ctx.restore();
     }
     
     ctx.restore();
@@ -1623,9 +1655,7 @@ export default function FloorplanCanvas({
             pushHistory();
             const newAntennas = antennas.filter(a => a.id !== antenna.id);
             setAntennas(newAntennas);
-            if (selectedAntennaId === antenna.id) {
-              setSelectedAntennaId(null);
-            }
+            setSelectedAntennaIds(prev => prev.filter(id => id !== antenna.id));
             return;
           }
         }
@@ -1637,11 +1667,13 @@ export default function FloorplanCanvas({
           const antenna = antennas[i];
           const d = Math.hypot(p.x - antenna.position.x, p.y - antenna.position.y);
           if (d <= thr) {
-            setSelectedAntennaId(selectedAntennaId === antenna.id ? null : antenna.id);
+            setSelectedAntennaIds(prev => prev.includes(antenna.id)
+              ? prev.filter(id => id !== antenna.id)
+              : [...prev, antenna.id]);
             return;
           }
         }
-        setSelectedAntennaId(null);
+        setSelectedAntennaIds([]);
         return;
       }
       
@@ -1658,7 +1690,7 @@ export default function FloorplanCanvas({
       
       if (clickedAntenna) {
         // Just select the antenna (dragging handles moving)
-        setSelectedAntennaId(clickedAntenna.id);
+        setSelectedAntennaIds([clickedAntenna.id]);
       } else {
         // Place new antenna
         pushHistory();
@@ -1666,10 +1698,10 @@ export default function FloorplanCanvas({
           id: Date.now().toString(),
           position: p,
           range: antennaRange,
-          power: 50 // Fixed power value
+          power: 50, // Fixed power value
         };
         setAntennas([...antennas, newAntenna]);
-        setSelectedAntennaId(newAntenna.id);
+        setSelectedAntennaIds([newAntenna.id]);
       }
     }
   };
@@ -2066,9 +2098,9 @@ export default function FloorplanCanvas({
     redoHistoryRef.current = [];
     undoRef.current = undefined;
     redoRef.current = undefined;
-    setAntennas([]);
-    setPreviewAntennas([]);
-    setSelectedAntennaId(null);
+  setAntennas([]);
+  setPreviewAntennas([]);
+  setSelectedAntennaIds([]);
     setIsDraggingAntenna(false);
     setIsPlacingAntennas(false);
   setAntennaDensity(65);
@@ -2104,7 +2136,10 @@ export default function FloorplanCanvas({
     setZoom(1);
     setPan({ x: 0, y: 0 });
 
-  if (loadedCanvasState.antennas) setAntennas(scaleForCanvas(loadedCanvasState.antennas));
+  if (loadedCanvasState.antennas) {
+    const scaledAntennas = scaleForCanvas(loadedCanvasState.antennas) as Array<Antenna & { pulsing?: boolean }>;
+    setAntennas(scaledAntennas.map(({ pulsing: _ignored, ...rest }) => rest));
+  }
   if (loadedCanvasState.areas) setAreas(scaleForCanvas(loadedCanvasState.areas));
   if (loadedCanvasState.showCoverage !== undefined) setShowCoverage(!!loadedCanvasState.showCoverage);
   if (loadedCanvasState.showRadiusBoundary !== undefined) setShowRadiusBoundary(!!loadedCanvasState.showRadiusBoundary);
@@ -2442,8 +2477,8 @@ export default function FloorplanCanvas({
         }
       }
 
-      // Antenna interactions: Alt=delete, Ctrl=select, else drag if near
-      if (mode === 'antenna' && antennas.length > 0) {
+      // Antenna interactions: Alt/Ctrl drag for multi actions; Alt delete, Ctrl toggle when clicking
+      if (mode === 'antenna') {
         const canvas = canvasRef.current; if (!canvas) return;
         const rect = canvas.getBoundingClientRect();
         let cx = (e.clientX - rect.left) * (canvas.width / rect.width);
@@ -2452,35 +2487,49 @@ export default function FloorplanCanvas({
         const isAlt = e.altKey === true;
         const isCtrl = e.ctrlKey === true || e.metaKey === true;
 
-        // Find the nearest antenna
         const thr = 15 / Math.max(0.2, zoom);
-        let nearest: { antenna: Antenna; index: number } | null = null;
-        for (let i = 0; i < antennas.length; i++) {
-          const antenna = antennas[i];
+        let nearest: { antenna: Antenna; distance: number } | null = null;
+        for (const antenna of antennas) {
           const d = Math.hypot(wx - antenna.position.x, wy - antenna.position.y);
-          if (d <= thr) { nearest = { antenna, index: i }; break; }
+          if (d <= thr && (!nearest || d < nearest.distance)) {
+            nearest = { antenna, distance: d };
+          }
         }
 
         if (nearest) {
           if (isAlt) {
-            // Alt+click: delete antenna
             pushHistory();
             setAntennas(prev => prev.filter(a => a.id !== nearest!.antenna.id));
-            if (selectedAntennaId === nearest.antenna.id) setSelectedAntennaId(null);
-            suppressClickRef.current = true; // prevent click handler from placing a new one
-            return;
-          }
-          if (isCtrl) {
-            // Ctrl+click: select/toggle selection
-            setSelectedAntennaId(prev => prev === nearest!.antenna.id ? null : nearest!.antenna.id);
+            setSelectedAntennaIds(prev => prev.filter(id => id !== nearest!.antenna.id));
             suppressClickRef.current = true;
             return;
           }
-          // No modifier: start dragging
+          if (isCtrl) {
+            setSelectedAntennaIds(prev => {
+              const exists = prev.includes(nearest!.antenna.id);
+              if (exists) return prev.filter(id => id !== nearest!.antenna.id);
+              return [...prev, nearest!.antenna.id];
+            });
+            suppressClickRef.current = true;
+            return;
+          }
+          setSelectedAntennaIds([nearest.antenna.id]);
           draggingAntennaIdRef.current = nearest.antenna.id;
           suppressClickRef.current = true;
           return;
         }
+
+        if (isAlt || isCtrl) {
+          antennaSelectStartRef.current = { x: wx, y: wy };
+          antennaSelectModeRef.current = isAlt ? 'delete' : 'select';
+          antennaSelectActiveRef.current = false;
+          setAntennaSelectRect(null);
+          suppressClickRef.current = true;
+          return;
+        }
+
+        if (selectedAntennaIds.length) setSelectedAntennaIds([]);
+        return;
       }
       
   if ((mode === 'select' || mode === 'measure') && currentArea && currentArea.length) {
@@ -2557,6 +2606,34 @@ export default function FloorplanCanvas({
         setMultiDeleteRect({ x, y, w, h });
       } else if (!multiDeleteActiveRef.current) {
         setMultiDeleteRect(null);
+      }
+      return;
+    }
+    if (antennaSelectStartRef.current) {
+      const canvas = canvasRef.current; if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      let cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+      let cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+      const wx = (cx - pan.x) / zoom; const wy = (cy - pan.y) / zoom;
+      const start = antennaSelectStartRef.current;
+      const dxWorld = wx - start.x;
+      const dyWorld = wy - start.y;
+      const dxCanvas = Math.abs(dxWorld) * zoom;
+      const dyCanvas = Math.abs(dyWorld) * zoom;
+      const shouldActivate = Math.max(dxCanvas, dyCanvas) > MULTI_DELETE_ACTIVATION_PX;
+      if (shouldActivate) {
+        if (!antennaSelectActiveRef.current) {
+          antennaSelectActiveRef.current = true;
+          suppressClickRef.current = true;
+        }
+        const mode = antennaSelectModeRef.current ?? 'select';
+        const x = Math.min(start.x, wx);
+        const y = Math.min(start.y, wy);
+        const w = Math.abs(dxWorld);
+        const h = Math.abs(dyWorld);
+        setAntennaSelectRect({ x, y, w, h, mode });
+      } else if (!antennaSelectActiveRef.current) {
+        setAntennaSelectRect(null);
       }
       return;
     }
@@ -2674,6 +2751,30 @@ export default function FloorplanCanvas({
       multiDeleteActiveRef.current = false;
       setMultiDeleteRect(null);
     }
+    if (antennaSelectStartRef.current) {
+      const rect = antennaSelectRect;
+      const mode = rect?.mode ?? antennaSelectModeRef.current;
+      if (antennaSelectActiveRef.current && rect && mode) {
+        const contains = (pt: Point) => pt.x >= rect.x && pt.x <= rect.x + rect.w && pt.y >= rect.y && pt.y <= rect.y + rect.h;
+        const insideIds = antennas.filter(a => contains(a.position)).map(a => a.id);
+        if (insideIds.length) {
+          if (mode === 'delete') {
+            const insideSet = new Set(insideIds);
+            pushHistory();
+            setAntennas(prev => prev.filter(a => !insideSet.has(a.id)));
+            setSelectedAntennaIds(prev => prev.filter(id => !insideSet.has(id)));
+          } else {
+            setSelectedAntennaIds(insideIds);
+          }
+        } else if (mode === 'select') {
+          setSelectedAntennaIds([]);
+        }
+      }
+      antennaSelectStartRef.current = null;
+      antennaSelectModeRef.current = null;
+      antennaSelectActiveRef.current = false;
+      setAntennaSelectRect(null);
+    }
     draggingVertexIdxRef.current = null;
     draggingHoleIndexRef.current = null;
     draggingAntennaIdRef.current = null;
@@ -2697,6 +2798,10 @@ export default function FloorplanCanvas({
     multiDeleteStartRef.current = null;
     multiDeleteActiveRef.current = false;
     setMultiDeleteRect(null);
+    antennaSelectStartRef.current = null;
+    antennaSelectModeRef.current = null;
+    antennaSelectActiveRef.current = false;
+    setAntennaSelectRect(null);
     isPanningRef.current = false; 
     setIsPanCursor(false); 
     if (suppressClickRef.current) {
@@ -3817,7 +3922,7 @@ export default function FloorplanCanvas({
                 <span>📡 <strong>Antenna Mode</strong></span>
                 <span
                   className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/20 text-white text-sm font-semibold cursor-help"
-                  title="Click to place • Drag to move • Ctrl+Click to select • Alt+Click to delete"
+                  title="Click to place • Drag to move • Ctrl+Click to select • Ctrl+drag to box-select • Alt+Click to delete • Alt+drag to box-delete"
                 >
                   ?
                 </span>
@@ -3888,7 +3993,7 @@ export default function FloorplanCanvas({
                 if (placedAntennas.length > 0) {
                   pushHistory();
                   setAntennas(placedAntennas);
-                  setSelectedAntennaId(null);
+                  setSelectedAntennaIds([]);
                   setPreviewAntennas([]); // Clear any existing preview
                   console.log('🟩 SMART PLACE: Placed', placedAntennas.length, 'antennas');
                 } else {
@@ -3936,13 +4041,13 @@ export default function FloorplanCanvas({
                   min="1"
                   max="30"
                   step="0.5"
-                  value={selectedAntennaId ? (antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) : antennaRange}
+                  value={selectedAntennaIds.length ? (antennas.find(a => a.id === selectedAntennaIds[0])?.range ?? antennaRange) : antennaRange}
                   onChange={(e) => {
                   const v = parseFloat(e.target.value);
-                  if (selectedAntennaId) {
+                  if (selectedAntennaIds.length) {
                     pushHistory();
-                    // Edit only the selected antenna's radius
-                    setAntennas(prev => prev.map(a => a.id === selectedAntennaId ? { ...a, range: v } : a));
+                    const selectedSet = new Set(selectedAntennaIds);
+                    setAntennas(prev => prev.map(a => selectedSet.has(a.id) ? { ...a, range: v } : a));
                   } else {
                     // Global change: update default and only antennas that matched the previous default
                     const old = antennaRange;
@@ -3963,13 +4068,13 @@ export default function FloorplanCanvas({
                   min="1"
                   max="50"
                   step="0.1"
-                  value={selectedAntennaId ? (antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) : antennaRange}
+                  value={selectedAntennaIds.length ? (antennas.find(a => a.id === selectedAntennaIds[0])?.range ?? antennaRange) : antennaRange}
                   onChange={(e) => {
                   const v = parseFloat(e.target.value) || 1;
-                  if (selectedAntennaId) {
+                  if (selectedAntennaIds.length) {
                     pushHistory();
-                    // Edit only the selected antenna's radius
-                    setAntennas(prev => prev.map(a => a.id === selectedAntennaId ? { ...a, range: v } : a));
+                    const selectedSet = new Set(selectedAntennaIds);
+                    setAntennas(prev => prev.map(a => selectedSet.has(a.id) ? { ...a, range: v } : a));
                   } else {
                     // Global change: update default and only antennas that matched the previous default
                     const old = antennaRange;
@@ -4005,7 +4110,7 @@ export default function FloorplanCanvas({
                 console.log('Clearing antennas...');
                 pushHistory();
                 setAntennas([]);
-                setSelectedAntennaId(null);
+                setSelectedAntennaIds([]);
                 // No need for setTimeout - useEffect will handle redraw
                 }}
                 className="bg-red-500/80 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-red-500 transition-all"
@@ -4039,27 +4144,32 @@ export default function FloorplanCanvas({
               </div>
             )}
 
-            {selectedAntennaId && (
+            {selectedAntennaIds.length > 0 && (
               <div className="flex flex-wrap items-center gap-3 text-xs text-white/80 border-t border-white/10 pt-2 mt-1">
                 <span className="rounded bg-white/15 px-2 py-0.5 uppercase tracking-wide text-white/85">
-                  Editing selected antenna
+                  Editing {selectedAntennaIds.length > 1 ? `${selectedAntennaIds.length} antennas` : 'selected antenna'}
                 </span>
                 <span className="rounded-full border border-white/25 bg-white/10 px-3 py-1 text-white">
-                  Selected: {antennas.find(a => a.id === selectedAntennaId)?.id.slice(-4)}
+                  {selectedAntennaIds.length === 1
+                    ? `ID …${selectedAntennaIds[0].slice(-4)}`
+                    : selectedAntennaIds.length === antennas.length
+                      ? 'All antennas selected'
+                      : `${selectedAntennaIds.length} selected`}
                 </span>
                 <button
                   type="button"
                   onClick={() => {
-                    const sel = antennas.find(a => a.id === selectedAntennaId);
-                    if (!sel || sel.range === antennaRange) return;
+                    const selectedSet = new Set(selectedAntennaIds);
+                    const needsReset = antennas.some(a => selectedSet.has(a.id) && a.range !== antennaRange);
+                    if (!needsReset) return;
                     pushHistory();
-                    setAntennas(prev => prev.map(a => (a.id === selectedAntennaId ? { ...a, range: antennaRange } : a)));
+                    setAntennas(prev => prev.map(a => selectedSet.has(a.id) ? { ...a, range: antennaRange } : a));
                   }}
-                  disabled={(antennas.find(a => a.id === selectedAntennaId)?.range ?? antennaRange) === antennaRange}
+                  disabled={!antennas.some(a => selectedAntennaIds.includes(a.id) && a.range !== antennaRange)}
                   className="px-2 py-0.5 rounded border border-white/25 bg-white/10 text-white transition hover:bg-white/20 disabled:opacity-50"
-                  title="Reset selected antenna to the global radius"
+                  title="Reset all selected antennas to the global radius"
                 >
-                  Reset to global radius
+                  Reset selected to global radius
                 </button>
               </div>
             )}
@@ -4069,7 +4179,7 @@ export default function FloorplanCanvas({
         {/* Refine Mode Instructions */}
         {mode === 'refine' && (
           <div className="px-3 py-1.5 bg-blue-500/20 text-white rounded-lg text-sm backdrop-blur-sm">
-            🔧 Refine: Drag to move • Alt+click to delete • Ctrl+click to add dots
+            🔧 Refine: Drag to move • Alt+click to delete • Alt+drag to box delete • Ctrl+click to add dots
           </div>
         )}
       </div>
@@ -4203,11 +4313,6 @@ export default function FloorplanCanvas({
 <p className="text-xs text-blue-600">{currentArea.length} points selected{mode === 'measure' ? ' • Add is disabled in Measure' : (currentArea.length >= 3 ? ' • Click "Add" to complete' : ` • ${3 - currentArea.length} more points needed`)}</p>
             </div>
           </div>
-        </div>
-      )}
-    {(mode === 'edit-poly' || mode==='refine') && perimeter && (
-        <div className="absolute left-1/2 -translate-x-1/2 bottom-4 z-[1100] p-3 rounded-lg bg-amber-50/95 border border-amber-200 shadow text-amber-900 text-sm">
-      Drag vertices (perimeter and holes). Ctrl+click near an edge to add a point. Alt+click a vertex to delete.
         </div>
       )}
     {(mode === 'edit-hole' || mode==='refine') && holes.length > 0 && (
