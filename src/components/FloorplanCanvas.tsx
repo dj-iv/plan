@@ -74,6 +74,8 @@ interface Antenna {
   power?: number; // 0-100 percentage, optional to match antennaUtils
 }
 
+type PersistedAntenna = Antenna & { imageX?: number; imageY?: number; pulsing?: boolean };
+
 interface CoverageStats {
   coverageRatio: number;
   overlapRatio: number;
@@ -2245,13 +2247,21 @@ export default function FloorplanCanvas({
       const currentImageWidth = currentImageDimensions.width || savedImageDimensions.width || 1;
       const currentImageHeight = currentImageDimensions.height || savedImageDimensions.height || 1;
 
-      const legacyAntennas = Array.isArray(loadedCanvasState.antennas) && loadedCanvasState.antennas.some(ant => !Number.isFinite((ant as any).imageX) || !Number.isFinite((ant as any).imageY));
+      const storedAntennas: PersistedAntenna[] = Array.isArray(loadedCanvasState.antennas)
+        ? (loadedCanvasState.antennas as PersistedAntenna[])
+        : [];
 
-      const antennasToUse = (legacyAntennas && Array.isArray(loadedCanvasState.antennas))
-        ? (scaleForCanvas(loadedCanvasState.antennas) as Array<Antenna & { pulsing?: boolean }>)
+      const legacyAntennas = storedAntennas.some((antenna: PersistedAntenna) => {
+        const imageX = antenna.imageX ?? Number.NaN;
+        const imageY = antenna.imageY ?? Number.NaN;
+        return !Number.isFinite(imageX) || !Number.isFinite(imageY);
+      });
+
+      const antennasToUse: PersistedAntenna[] = legacyAntennas
+        ? (scaleForCanvas(storedAntennas) as PersistedAntenna[])
         : (Array.isArray(loadedCanvasState.mappedAntennasForSave)
-            ? loadedCanvasState.mappedAntennasForSave as Array<Antenna & { imageX?: number; imageY?: number; pulsing?: boolean }>
-            : loadedCanvasState.antennas as Array<Antenna & { imageX?: number; imageY?: number; pulsing?: boolean }>);
+            ? (loadedCanvasState.mappedAntennasForSave as PersistedAntenna[])
+            : storedAntennas);
 
       const remappedAntennas = antennasToUse.map(antenna => {
         const imageX = Number.isFinite((antenna as any).imageX)
