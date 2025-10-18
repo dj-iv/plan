@@ -4,7 +4,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import Image from 'next/image';
 import { getDownloadURL, ref } from 'firebase/storage';
-import FileUpload from '@/components/FileUpload';
+import FileUpload, { type ReadyFloorInfo } from '@/components/FileUpload';
 import FloorUpload from '@/components/FloorUpload';
 import ScaleControl from '@/components/ScaleControl';
 import FloorplanCanvas from '@/components/FloorplanCanvas';
@@ -29,6 +29,7 @@ export default function Home() {
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [scale, setScale] = useState<number | null>(null);
   const [unit, setUnit] = useState<string>('meters');
+  const [displayUnit, setDisplayUnit] = useState<'m' | 'ft'>('m');
   const [calibrateTick, setCalibrateTick] = useState<number>(0);
   const [showCanvas, setShowCanvas] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
@@ -107,6 +108,116 @@ export default function Home() {
 
   const floorStateHashesRef = useRef<Map<string, string>>(new Map());
 
+  const currentFloorEntry = useMemo(() => {
+    if (!currentFloorId) return null;
+    return floors.find(floor => floor.id === currentFloorId) ?? null;
+  }, [floors, currentFloorId]);
+
+  const scalePresentation = useMemo(() => {
+    if (typeof scale !== 'number' || !isFinite(scale) || scale <= 0) {
+      return null;
+    }
+    if (!currentFloorEntry) {
+      return null;
+    }
+
+    const canvasState = currentFloorEntry.canvasState || {};
+    const metadata = canvasState.scaleMetadata || null;
+    const imageWidthPx = metadata?.imageWidth ?? canvasState.originalImageWidth ?? null;
+    const imageHeightPx = metadata?.imageHeight ?? canvasState.originalImageHeight ?? null;
+
+    const widthMm = currentFloorEntry.sourcePageWidthMm ?? null;
+    const heightMm = currentFloorEntry.sourcePageHeightMm ?? null;
+    const toMmFromPoints = (points?: number | null) => {
+      if (typeof points !== 'number' || !isFinite(points) || points <= 0) {
+        return null;
+      }
+      return (points / 72) * 25.4;
+    };
+
+    const mmPerPixelCandidates: number[] = [];
+    if (widthMm && imageWidthPx) {
+      mmPerPixelCandidates.push(widthMm / imageWidthPx);
+    }
+    if (heightMm && imageHeightPx) {
+      mmPerPixelCandidates.push(heightMm / imageHeightPx);
+    }
+
+    if (!mmPerPixelCandidates.length) {
+      const widthPoints = currentFloorEntry.sourcePageWidthPoints ?? null;
+      const heightPoints = currentFloorEntry.sourcePageHeightPoints ?? null;
+      const widthMmFromPoints = widthPoints ? toMmFromPoints(widthPoints) : null;
+      const heightMmFromPoints = heightPoints ? toMmFromPoints(heightPoints) : null;
+      if (widthMmFromPoints && imageWidthPx) {
+        mmPerPixelCandidates.push(widthMmFromPoints / imageWidthPx);
+      }
+      if (heightMmFromPoints && imageHeightPx) {
+        mmPerPixelCandidates.push(heightMmFromPoints / imageHeightPx);
+      }
+    }
+
+    const validCandidates = mmPerPixelCandidates.filter(value => Number.isFinite(value) && value > 0);
+    if (!validCandidates.length) {
+      return null;
+    }
+
+    const planMmPerPixel = validCandidates.reduce((acc, value) => acc + value, 0) / validCandidates.length;
+    if (!Number.isFinite(planMmPerPixel) || planMmPerPixel <= 0) {
+      return null;
+    }
+
+    const realMmPerPixel = scale * 1000;
+    if (!Number.isFinite(realMmPerPixel) || realMmPerPixel <= 0) {
+      return null;
+    }
+
+    const ratio = realMmPerPixel / planMmPerPixel;
+    if (!Number.isFinite(ratio) || ratio <= 0) {
+      return null;
+    }
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[scale:pdf-derived]', {
+        floorId: currentFloorEntry.id,
+        realMmPerPixel,
+        planMmPerPixel,
+        ratio,
+        widthMm,
+        heightMm,
+        imageWidthPx,
+        imageHeightPx,
+        widthPoints: currentFloorEntry.sourcePageWidthPoints,
+        heightPoints: currentFloorEntry.sourcePageHeightPoints,
+        renderScale: currentFloorEntry.sourceRenderScale,
+      });
+    }
+
+    const roundedRatio = (() => {
+      if (ratio >= 200) return Math.round(ratio);
+      if (ratio >= 20) return Math.round(ratio * 10) / 10;
+      return Math.round(ratio * 100) / 100;
+    })();
+
+    const ratioFormatter = new Intl.NumberFormat(undefined, {
+      maximumFractionDigits: roundedRatio >= 100 ? 0 : roundedRatio >= 20 ? 1 : 2,
+    });
+    const ratioLabel = `1:${ratioFormatter.format(roundedRatio)}`;
+
+    const cmRealMeters = ratio / 100;
+    const cmFormatter = new Intl.NumberFormat(undefined, {
+      maximumFractionDigits: cmRealMeters >= 10 ? 1 : cmRealMeters >= 1 ? 2 : 3,
+    });
+  const ratioDetail = `1 cm on plan ~ ${cmFormatter.format(cmRealMeters)} m real`;
+
+    const sourceHint = 'Derived from PDF page size metadata';
+
+    return {
+      ratioLabel,
+      ratioDetail,
+      sourceHint,
+    };
+  }, [scale, currentFloorEntry]);
+
   const resolveImageUrl = useCallback(async (metadata?: { imageUrl?: string; storagePath?: string; thumbnailUrl?: string }): Promise<string | null> => {
     if (!metadata) {
       return null;
@@ -178,6 +289,12 @@ export default function Home() {
       thumbnailUrl: floor.metadata?.thumbnailUrl,
       imageUrl: floor.metadata?.imageUrl,
       imageFile: undefined,
+  sourcePlanType: floor.sourcePlanType,
+  sourcePageWidthMm: floor.sourcePageWidthMm ?? null,
+  sourcePageHeightMm: floor.sourcePageHeightMm ?? null,
+  sourcePageWidthPoints: floor.sourcePageWidthPoints ?? null,
+  sourcePageHeightPoints: floor.sourcePageHeightPoints ?? null,
+  sourceRenderScale: floor.sourceRenderScale ?? null,
       canvasState,
       stats: statsUnits.stats,
       units: statsUnits.units,
@@ -234,14 +351,14 @@ export default function Home() {
     try { localStorage.setItem('projects.sortBy', sortBy); } catch {}
   }, [sortBy]);
 
-  const handleInitialFloorUpload = useCallback((uploadedFloors: Array<{ file: File; previewUrl?: string; name: string }>) => {
+  const handleInitialFloorUpload = useCallback((uploadedFloors: ReadyFloorInfo[]) => {
     if (uploadedFloors.length === 0) {
       return;
     }
 
-  floorStateHashesRef.current.clear();
+    floorStateHashesRef.current.clear();
 
-  const now = new Date();
+    const now = new Date();
     const additions: FloorEntry[] = uploadedFloors.map((item, index) => {
       const floorId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
@@ -261,7 +378,13 @@ export default function Home() {
         imageUrl: preview,
         imageFile: item.file,
         canvasState: blankState,
-  stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [], antennaRange: null, pulsingAntennaCount: 0, pulsingAntennas: [] },
+        sourcePlanType: item.sourcePlanType,
+        sourcePageWidthMm: item.sourcePageWidthMm ?? null,
+        sourcePageHeightMm: item.sourcePageHeightMm ?? null,
+        sourcePageWidthPoints: item.sourcePageWidthPoints ?? null,
+        sourcePageHeightPoints: item.sourcePageHeightPoints ?? null,
+        sourceRenderScale: item.sourceRenderScale ?? null,
+        stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [], antennaRange: null, pulsingAntennaCount: 0, pulsingAntennas: [] },
         units: normaliseUnit(unit as Units),
         scale: null,
         dirty: true,
@@ -509,7 +632,7 @@ export default function Home() {
     setShowFloorUpload(true);
   }, [currentProjectId]);
 
-  const handleFloorUpload = useCallback(async (uploadedFloors: Array<{ file: File; previewUrl?: string; name: string }>) => {
+  const handleFloorUpload = useCallback(async (uploadedFloors: ReadyFloorInfo[]) => {
     const targetProjectId = floorUploadTargetProjectId;
     setShowFloorUpload(false);
     setFloorUploadTargetProjectId(null);
@@ -524,7 +647,7 @@ export default function Home() {
       ), -1);
       const nextOrderStart = highestOrder + 1;
 
-      const additions: FloorEntry[] = uploadedFloors.map((item, index) => {
+  const additions: FloorEntry[] = uploadedFloors.map((item, index) => {
         const localId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `local-${Date.now()}-${index}`;
@@ -542,6 +665,12 @@ export default function Home() {
           imageUrl: preview,
           imageFile: item.file,
           canvasState: blankState,
+          sourcePlanType: item.sourcePlanType,
+          sourcePageWidthMm: item.sourcePageWidthMm ?? null,
+          sourcePageHeightMm: item.sourcePageHeightMm ?? null,
+          sourcePageWidthPoints: item.sourcePageWidthPoints ?? null,
+          sourcePageHeightPoints: item.sourcePageHeightPoints ?? null,
+          sourceRenderScale: item.sourceRenderScale ?? null,
           stats: { antennaCount: 0, areaCount: 0, totalArea: 0, areaSummaries: [], antennaRange: null, pulsingAntennaCount: 0, pulsingAntennas: [] },
           units: normaliseUnit(unit as Units),
           scale: null,
@@ -591,7 +720,17 @@ export default function Home() {
         }
 
         for (let i = 0; i < uploadedFloors.length; i++) {
-          const { file, previewUrl, name } = uploadedFloors[i];
+          const {
+            file,
+            previewUrl,
+            name,
+            sourcePlanType,
+            sourcePageWidthMm,
+            sourcePageHeightMm,
+            sourcePageWidthPoints,
+            sourcePageHeightPoints,
+            sourceRenderScale,
+          } = uploadedFloors[i];
           let thumbnailBlob: Blob | undefined;
           if (previewUrl) {
             try {
@@ -607,6 +746,12 @@ export default function Home() {
             canvasState: {} as CanvasState,
             imageFile: file,
             thumbnailBlob,
+            sourcePlanType,
+            sourcePageWidthMm,
+            sourcePageHeightMm,
+            sourcePageWidthPoints,
+            sourcePageHeightPoints,
+            sourceRenderScale,
           }, nextOrderStart + i);
         }
 
@@ -631,7 +776,17 @@ export default function Home() {
       const nextOrderStart = highestOrder + 1;
       const hadExistingFloors = floors.length > 0;
       for (let i = 0; i < uploadedFloors.length; i++) {
-        const { file, previewUrl, name } = uploadedFloors[i];
+        const {
+          file,
+          previewUrl,
+          name,
+          sourcePlanType,
+          sourcePageWidthMm,
+          sourcePageHeightMm,
+          sourcePageWidthPoints,
+          sourcePageHeightPoints,
+          sourceRenderScale,
+        } = uploadedFloors[i];
         let thumbnailBlob: Blob | undefined;
         if (previewUrl) {
           try {
@@ -647,6 +802,12 @@ export default function Home() {
           canvasState: {} as CanvasState,
           imageFile: file,
           thumbnailBlob,
+          sourcePlanType,
+          sourcePageWidthMm,
+          sourcePageHeightMm,
+          sourcePageWidthPoints,
+          sourcePageHeightPoints,
+          sourceRenderScale,
         }, nextOrderStart + i);
 
         const floorData = await FloorService.getFloor(effectiveProjectId, newFloorId);
@@ -1481,6 +1642,10 @@ export default function Home() {
             <ScaleControl
               currentScale={scale}
               currentUnit={unit}
+              scaleRatioLabel={scalePresentation?.ratioLabel ?? null}
+              scaleRatioDetail={scalePresentation?.ratioDetail ?? null}
+              scaleSourceHint={scalePresentation?.sourceHint ?? null}
+              displayUnit={displayUnit}
               onRequestCalibrate={() => setCalibrateTick(t => t + 1)}
             />
             <button
@@ -1518,6 +1683,9 @@ export default function Home() {
           imageUrl={imageUrl} 
           scale={scale} 
           scaleUnit={unit}
+          scaleRatioLabel={scalePresentation?.ratioLabel ?? null}
+          displayUnit={displayUnit}
+          onDisplayUnitChange={setDisplayUnit}
           onCalibrate={(s,u)=>{ 
             setScale(s); 
             setUnit(u); 

@@ -12,6 +12,7 @@ interface FloorsPanelProps {
   onAddFloor: () => void;
   isLoading?: boolean;
   formatAreaValue?: (areaSqMeters: number, preferredUnit?: Units) => string;
+  formatRadiusValue?: (radiusMeters?: number | null, preferredUnit?: Units) => string;
   className?: string;
   onDetectFloorName?: (floorId: string) => void;
   aiNameStatus?: Record<string, FloorNameAiStatus>;
@@ -26,6 +27,7 @@ export default function FloorsPanel({
   onAddFloor,
   isLoading = false,
   formatAreaValue,
+  formatRadiusValue,
   className = '',
   onDetectFloorName,
   aiNameStatus,
@@ -65,6 +67,10 @@ export default function FloorsPanel({
       return '—';
     }
 
+    if (formatRadiusValue) {
+      return formatRadiusValue(radiusMeters, units);
+    }
+
     const unitKey = (units || 'meters') as Units;
     const { value, label } = (() => {
       switch (unitKey) {
@@ -81,7 +87,7 @@ export default function FloorsPanel({
     const magnitude = Math.abs(value);
     const precision = magnitude >= 100 ? 0 : magnitude >= 10 ? 1 : 2;
     return `${value.toFixed(precision)} ${label}`;
-  }, []);
+  }, [formatRadiusValue]);
 
   useEffect(() => {
     if (currentFloorId) {

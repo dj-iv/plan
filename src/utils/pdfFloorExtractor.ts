@@ -7,6 +7,11 @@ export interface PdfPageCandidate {
   dataUrl: string;
   coverage?: number | null;
   classification: PdfPageClassification;
+  pageWidthPoints?: number | null;
+  pageHeightPoints?: number | null;
+  pageWidthMillimeters?: number | null;
+  pageHeightMillimeters?: number | null;
+  renderScale?: number | null;
 }
 
 export interface PdfExtractionOptions {
@@ -78,6 +83,11 @@ export async function extractPdfPages(
           dataUrl: normaliseDataUrl(page.dataUrl),
           coverage,
           classification: classifyCoverage(coverage, floorThreshold, textThreshold),
+          pageWidthPoints: page.pageWidthPoints ?? null,
+          pageHeightPoints: page.pageHeightPoints ?? null,
+          pageWidthMillimeters: page.pageWidthMillimeters ?? null,
+          pageHeightMillimeters: page.pageHeightMillimeters ?? null,
+          renderScale: page.renderScale ?? null,
         } as PdfPageCandidate;
       });
 

@@ -110,6 +110,12 @@ export class FloorService {
         thumbnailUrl,
       },
       canvasState: flattenNestedPointArrays(payload.canvasState),
+      sourcePlanType: payload.sourcePlanType,
+      sourcePageWidthMm: payload.sourcePageWidthMm,
+      sourcePageHeightMm: payload.sourcePageHeightMm,
+      sourcePageWidthPoints: payload.sourcePageWidthPoints,
+      sourcePageHeightPoints: payload.sourcePageHeightPoints,
+      sourceRenderScale: payload.sourceRenderScale,
     });
 
     await setDoc(this.floorDoc(projectId, floorId), docData, { merge: true });
@@ -167,6 +173,12 @@ export class FloorService {
       canvasState,
       stats,
       units,
+      sourcePlanType: data.sourcePlanType,
+      sourcePageWidthMm: data.sourcePageWidthMm ?? null,
+      sourcePageHeightMm: data.sourcePageHeightMm ?? null,
+      sourcePageWidthPoints: data.sourcePageWidthPoints ?? null,
+      sourcePageHeightPoints: data.sourcePageHeightPoints ?? null,
+      sourceRenderScale: data.sourceRenderScale ?? null,
     } as FloorData;
   }
 
@@ -235,6 +247,12 @@ export class FloorService {
     if (thumbnailUrl) {
       patch.metadata = { ...(patch.metadata||{}), thumbnailUrl };
     }
+    patch.sourcePlanType = payload.sourcePlanType ?? patch.sourcePlanType;
+    if (payload.sourcePageWidthMm !== undefined) patch.sourcePageWidthMm = payload.sourcePageWidthMm;
+    if (payload.sourcePageHeightMm !== undefined) patch.sourcePageHeightMm = payload.sourcePageHeightMm;
+    if (payload.sourcePageWidthPoints !== undefined) patch.sourcePageWidthPoints = payload.sourcePageWidthPoints;
+    if (payload.sourcePageHeightPoints !== undefined) patch.sourcePageHeightPoints = payload.sourcePageHeightPoints;
+    if (payload.sourceRenderScale !== undefined) patch.sourceRenderScale = payload.sourceRenderScale;
     await setDoc(this.floorDoc(projectId, floorId), removeUndefinedValues(patch), { merge: true });
     try { await updateDoc(doc(db, PROJECTS_COLLECTION, projectId), { updatedAt: Timestamp.fromDate(now) }); } catch {}
   }

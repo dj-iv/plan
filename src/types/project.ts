@@ -110,6 +110,9 @@ export type CanvasState = {
   canvasHeight?: number;
   originalImageWidth?: number;
   originalImageHeight?: number;
+  savedForDeviceWidth?: number;
+  savedForDeviceHeight?: number;
+  mappedAntennasForSave?: (Antenna & { imageX?: number; imageY?: number })[];
 };
 
 export type Units = 'meters' | 'cm' | 'mm' | 'feet';
@@ -202,6 +205,12 @@ export type SaveFloorRequest = {
   canvasState: CanvasState;
   imageFile?: File;
   thumbnailBlob?: Blob;
+  sourcePlanType?: 'pdf' | 'image' | 'bitmap';
+  sourcePageWidthMm?: number | null;
+  sourcePageHeightMm?: number | null;
+  sourcePageWidthPoints?: number | null;
+  sourcePageHeightPoints?: number | null;
+  sourceRenderScale?: number | null;
 };
 
 export type FloorData = {
@@ -223,6 +232,12 @@ export type FloorData = {
   canvasState: CanvasState;
   stats?: FloorStatistics;
   units?: Units;
+  sourcePlanType?: 'pdf' | 'image' | 'bitmap';
+  sourcePageWidthMm?: number | null;
+  sourcePageHeightMm?: number | null;
+  sourcePageWidthPoints?: number | null;
+  sourcePageHeightPoints?: number | null;
+  sourceRenderScale?: number | null;
 };
 
 export type FloorSummary = {
@@ -258,4 +273,10 @@ export type FloorEntry = {
   persisted: boolean;
   loaded: boolean;
   stateHash?: string;
+  sourcePlanType?: 'pdf' | 'image' | 'bitmap';
+  sourcePageWidthMm?: number | null;
+  sourcePageHeightMm?: number | null;
+  sourcePageWidthPoints?: number | null;
+  sourcePageHeightPoints?: number | null;
+  sourceRenderScale?: number | null;
 };

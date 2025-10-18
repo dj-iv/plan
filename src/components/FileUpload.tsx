@@ -6,8 +6,20 @@ import ProcessingMessage from './ProcessingMessage';
 import PdfConversionHelper from './PdfConversionHelper';
 import { extractPdfPages, type PdfExtractionResult, type PdfPageClassification } from '../utils/pdfFloorExtractor';
 
+export type ReadyFloorInfo = {
+  file: File;
+  previewUrl?: string;
+  name: string;
+  sourcePageWidthMm?: number | null;
+  sourcePageHeightMm?: number | null;
+  sourcePageWidthPoints?: number | null;
+  sourcePageHeightPoints?: number | null;
+  sourceRenderScale?: number | null;
+  sourcePlanType?: 'pdf' | 'image' | 'bitmap';
+};
+
 interface FileUploadProps {
-  onFilesReady: (files: Array<{ file: File; previewUrl?: string; name: string }>) => void;
+  onFilesReady: (files: ReadyFloorInfo[]) => void;
   disabled?: boolean;
 }
 
@@ -32,6 +44,12 @@ interface PendingFloor {
   sourcePdfPage?: number;
   sourcePdfPageCount?: number;
   detection?: PdfDetectionMeta;
+  sourcePageWidthMm?: number | null;
+  sourcePageHeightMm?: number | null;
+  sourcePageWidthPoints?: number | null;
+  sourcePageHeightPoints?: number | null;
+  sourceRenderScale?: number | null;
+  sourcePlanType?: 'pdf' | 'image' | 'bitmap';
 }
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
@@ -143,6 +161,12 @@ export default function FileUpload({ onFilesReady, disabled = false }: FileUploa
           classification: page.classification,
           fallback: Boolean(extraction.fallback),
         } satisfies PdfDetectionMeta,
+        sourcePageWidthMm: page.pageWidthMillimeters ?? null,
+        sourcePageHeightMm: page.pageHeightMillimeters ?? null,
+        sourcePageWidthPoints: page.pageWidthPoints ?? null,
+        sourcePageHeightPoints: page.pageHeightPoints ?? null,
+        sourceRenderScale: page.renderScale ?? null,
+        sourcePlanType: 'pdf' as const,
       };
     });
 
@@ -180,6 +204,12 @@ export default function FileUpload({ onFilesReady, disabled = false }: FileUploa
         sourcePdfPage: seed.sourcePdfPage,
         sourcePdfPageCount: seed.sourcePdfPageCount,
         detection: seed.detection,
+        sourcePageWidthMm: seed.sourcePageWidthMm,
+        sourcePageHeightMm: seed.sourcePageHeightMm,
+        sourcePageWidthPoints: seed.sourcePageWidthPoints,
+        sourcePageHeightPoints: seed.sourcePageHeightPoints,
+        sourceRenderScale: seed.sourceRenderScale,
+        sourcePlanType: seed.sourcePlanType,
       }));
 
       return [...updated, ...additions];
@@ -234,6 +264,7 @@ export default function FileUpload({ onFilesReady, disabled = false }: FileUploa
         previewUrl: dataUrl,
         status: 'ready',
         errorMessage: undefined,
+        sourcePlanType: 'bitmap',
       }));
     } catch (error) {
       console.warn('DWG conversion failed', error);
@@ -253,6 +284,7 @@ export default function FileUpload({ onFilesReady, disabled = false }: FileUploa
       objectUrl,
       status: 'ready',
       errorMessage: undefined,
+      sourcePlanType: 'image',
     }));
   }, [updatePendingFloor]);
 
@@ -351,6 +383,12 @@ export default function FileUpload({ onFilesReady, disabled = false }: FileUploa
         file: floor.processedFile!,
         previewUrl: floor.previewUrl,
         name: floor.name,
+        sourcePageWidthMm: floor.sourcePageWidthMm ?? null,
+        sourcePageHeightMm: floor.sourcePageHeightMm ?? null,
+        sourcePageWidthPoints: floor.sourcePageWidthPoints ?? null,
+        sourcePageHeightPoints: floor.sourcePageHeightPoints ?? null,
+        sourceRenderScale: floor.sourceRenderScale ?? null,
+        sourcePlanType: floor.sourcePlanType ?? (floor.sourcePdfName ? 'pdf' : 'image'),
       }))
     );
 
@@ -401,6 +439,12 @@ export default function FileUpload({ onFilesReady, disabled = false }: FileUploa
         classification: 'unknown',
         fallback: true,
       },
+      sourcePlanType: 'bitmap',
+      sourcePageWidthMm: null,
+      sourcePageHeightMm: null,
+      sourcePageWidthPoints: null,
+      sourcePageHeightPoints: null,
+      sourceRenderScale: null,
     }));
 
     setManualTargetId(null);

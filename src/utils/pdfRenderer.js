@@ -90,7 +90,18 @@ const renderPageFromDocument = async (pdfDocument, pageNumber, options = {}) => 
   const scale = options.scale || DEFAULT_RENDER_SCALE;
   console.log(`Rendering PDF page ${pageNumber} at scale ${scale}`);
   const page = await pdfDocument.getPage(pageNumber);
+  const baseViewport = page.getViewport({ scale: 1 });
   const viewport = page.getViewport({ scale });
+  const viewBox = Array.isArray(page.view) && page.view.length === 4 ? page.view : [0, 0, baseViewport.width, baseViewport.height];
+  const pdfWidthPointsRaw = viewBox[2] - viewBox[0];
+  const pdfHeightPointsRaw = viewBox[3] - viewBox[1];
+  const CSS_UNITS = 96 / 72;
+  const pdfWidthPoints = pdfWidthPointsRaw && Number.isFinite(pdfWidthPointsRaw) && pdfWidthPointsRaw > 0
+    ? pdfWidthPointsRaw
+    : (baseViewport.width / CSS_UNITS);
+  const pdfHeightPoints = pdfHeightPointsRaw && Number.isFinite(pdfHeightPointsRaw) && pdfHeightPointsRaw > 0
+    ? pdfHeightPointsRaw
+    : (baseViewport.height / CSS_UNITS);
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d', { alpha: false });
   if (!context) {
@@ -110,11 +121,18 @@ const renderPageFromDocument = async (pdfDocument, pageNumber, options = {}) => 
   page.cleanup?.();
   canvas.width = 0;
   canvas.height = 0;
+  const widthMillimeters = pdfWidthPoints ? (pdfWidthPoints / 72) * 25.4 : null;
+  const heightMillimeters = pdfHeightPoints ? (pdfHeightPoints / 72) * 25.4 : null;
   return {
     dataUrl,
     width: viewport.width,
     height: viewport.height,
     coverage,
+    pageWidthPoints: pdfWidthPoints,
+    pageHeightPoints: pdfHeightPoints,
+    pageWidthMillimeters: widthMillimeters,
+    pageHeightMillimeters: heightMillimeters,
+    renderScale: scale,
   };
 };
 
@@ -161,6 +179,11 @@ export async function renderPdfToImages(file, options = {}) {
           width: result.width,
           height: result.height,
           coverage: result.coverage,
+          pageWidthPoints: result.pageWidthPoints,
+          pageHeightPoints: result.pageHeightPoints,
+          pageWidthMillimeters: result.pageWidthMillimeters,
+          pageHeightMillimeters: result.pageHeightMillimeters,
+          renderScale: result.renderScale,
         });
       } catch (pageError) {
         console.warn(`Failed to render PDF page ${pageNumber}`, pageError);

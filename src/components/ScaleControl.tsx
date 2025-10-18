@@ -3,11 +3,27 @@
 interface ScaleControlProps {
   currentScale: number | null;
   currentUnit: string;
+  scaleRatioLabel?: string | null;
+  scaleRatioDetail?: string | null;
+  scaleSourceHint?: string | null;
   onRequestCalibrate?: () => void;
+  displayUnit?: 'm' | 'ft';
 }
 
-export default function ScaleControl({ currentScale, currentUnit, onRequestCalibrate }: ScaleControlProps) {
+export default function ScaleControl({ currentScale, currentUnit, scaleRatioLabel, scaleRatioDetail, scaleSourceHint, onRequestCalibrate, displayUnit = 'm' }: ScaleControlProps) {
   // Manual numeric entry removed; prefer Calibrate on canvas
+
+  const formattedScale = (() => {
+    if (typeof currentScale !== 'number' || !Number.isFinite(currentScale) || currentScale <= 0) {
+      return null;
+    }
+    const metersLabel = `${currentScale.toFixed(currentScale >= 1 ? 2 : 3)} m`;
+    const feetFactor = currentScale * 3.28084;
+    const feetLabel = `${feetFactor.toFixed(feetFactor >= 1 ? 2 : 3)} ft`;
+    return displayUnit === 'ft'
+      ? `${feetLabel} (${metersLabel})`
+      : `${metersLabel} (${feetLabel})`;
+  })();
 
   return (
     <div className="space-y-4">
@@ -21,7 +37,18 @@ export default function ScaleControl({ currentScale, currentUnit, onRequestCalib
             </div>
             <div>
               <p className="text-sm font-medium text-green-800">Scale Configured</p>
-              <p className="text-xs text-green-600">1 pixel = {currentScale} m ({currentUnit})</p>
+              <p className="text-xs text-green-600">
+                1 pixel ≈ {formattedScale ?? '—'} ({currentUnit})
+              </p>
+              {scaleRatioLabel && (
+                <p className="text-xs text-green-700 mt-1">Scale ~ {scaleRatioLabel}</p>
+              )}
+              {scaleRatioDetail && (
+                <p className="text-xs text-green-700">{scaleRatioDetail}</p>
+              )}
+              {scaleSourceHint && (
+                <p className="text-[10px] text-green-500 mt-1">{scaleSourceHint}</p>
+              )}
             </div>
           </div>
         </div>

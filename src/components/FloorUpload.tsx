@@ -4,9 +4,10 @@ import { useCallback, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import ProcessingMessage from './ProcessingMessage';
 import { extractPdfPages, type PdfPageClassification } from '../utils/pdfFloorExtractor';
+import type { ReadyFloorInfo } from './FileUpload';
 
 interface FloorUploadProps {
-  onFilesUpload: (files: Array<{ file: File; previewUrl?: string; name: string }>) => void;
+  onFilesUpload: (files: ReadyFloorInfo[]) => void;
   onCancel: () => void;
   disabled?: boolean;
   multiple?: boolean;
@@ -27,6 +28,12 @@ interface ProcessingFile {
     classification: PdfPageClassification;
     fallback?: boolean;
   };
+  sourcePageWidthMm?: number | null;
+  sourcePageHeightMm?: number | null;
+  sourcePageWidthPoints?: number | null;
+  sourcePageHeightPoints?: number | null;
+  sourceRenderScale?: number | null;
+  sourcePlanType?: 'pdf' | 'image' | 'bitmap';
 }
 
 interface ProcessedOutput {
@@ -37,6 +44,12 @@ interface ProcessedOutput {
   sourcePdfPage?: number;
   sourcePdfPageCount?: number;
   detection?: ProcessingFile['detection'];
+  sourcePageWidthMm?: number | null;
+  sourcePageHeightMm?: number | null;
+  sourcePageWidthPoints?: number | null;
+  sourcePageHeightPoints?: number | null;
+  sourceRenderScale?: number | null;
+  sourcePlanType?: 'pdf' | 'image' | 'bitmap';
 }
 
 const MAX_PDF_PAGES = 40;
@@ -79,7 +92,7 @@ export default function FloorUpload({ onFilesUpload, onCancel, disabled = false,
   const [processingFiles, setProcessingFiles] = useState<ProcessingFile[]>([]);
   const [hasUploaded, setHasUploaded] = useState(false);
 
-  const emitUploads = useCallback((files: Array<{ file: File; previewUrl?: string; name: string }>) => {
+  const emitUploads = useCallback((files: ReadyFloorInfo[]) => {
     if (files.length === 0 || hasUploaded) {
       return;
     }
@@ -146,6 +159,12 @@ export default function FloorUpload({ onFilesUpload, onCancel, disabled = false,
               classification: page.classification,
               fallback: Boolean(extraction.fallback),
             },
+            sourcePageWidthMm: page.pageWidthMillimeters ?? null,
+            sourcePageHeightMm: page.pageHeightMillimeters ?? null,
+            sourcePageWidthPoints: page.pageWidthPoints ?? null,
+            sourcePageHeightPoints: page.pageHeightPoints ?? null,
+            sourceRenderScale: page.renderScale ?? null,
+            sourcePlanType: 'pdf',
           };
         });
 
@@ -159,7 +178,7 @@ export default function FloorUpload({ onFilesUpload, onCancel, disabled = false,
     if (file.type.startsWith('image/')) {
       const previewUrl = URL.createObjectURL(file);
       return {
-        outputs: [{ file, previewUrl, name: baseName }],
+  outputs: [{ file, previewUrl, name: baseName, sourcePlanType: 'image' }],
         warnings: [],
       };
     }
@@ -208,6 +227,12 @@ export default function FloorUpload({ onFilesUpload, onCancel, disabled = false,
               sourcePdfPage: primary.sourcePdfPage,
               sourcePdfPageCount: primary.sourcePdfPageCount,
               detection: primary.detection,
+              sourcePageWidthMm: primary.sourcePageWidthMm ?? null,
+              sourcePageHeightMm: primary.sourcePageHeightMm ?? null,
+              sourcePageWidthPoints: primary.sourcePageWidthPoints ?? null,
+              sourcePageHeightPoints: primary.sourcePageHeightPoints ?? null,
+              sourceRenderScale: primary.sourceRenderScale ?? null,
+              sourcePlanType: primary.sourcePlanType ?? (primary.sourcePdfName ? 'pdf' : 'image'),
               errorMessage: undefined,
             };
           });
@@ -226,6 +251,12 @@ export default function FloorUpload({ onFilesUpload, onCancel, disabled = false,
             sourcePdfPage: output.sourcePdfPage,
             sourcePdfPageCount: output.sourcePdfPageCount,
             detection: output.detection,
+            sourcePageWidthMm: output.sourcePageWidthMm ?? null,
+            sourcePageHeightMm: output.sourcePageHeightMm ?? null,
+            sourcePageWidthPoints: output.sourcePageWidthPoints ?? null,
+            sourcePageHeightPoints: output.sourcePageHeightPoints ?? null,
+            sourceRenderScale: output.sourceRenderScale ?? null,
+            sourcePlanType: output.sourcePlanType ?? (output.sourcePdfName ? 'pdf' : 'image'),
           }));
 
           return [...updated, ...additions];
@@ -262,7 +293,13 @@ export default function FloorUpload({ onFilesUpload, onCancel, disabled = false,
       emitUploads(successfulFiles.map(pf => ({
         file: pf.file,
         previewUrl: pf.previewUrl,
-        name: pf.name
+        name: pf.name,
+        sourcePageWidthMm: pf.sourcePageWidthMm ?? null,
+        sourcePageHeightMm: pf.sourcePageHeightMm ?? null,
+        sourcePageWidthPoints: pf.sourcePageWidthPoints ?? null,
+        sourcePageHeightPoints: pf.sourcePageHeightPoints ?? null,
+        sourceRenderScale: pf.sourceRenderScale ?? null,
+        sourcePlanType: pf.sourcePlanType ?? (pf.sourcePdfName ? 'pdf' : 'image'),
       })));
     }
   };
