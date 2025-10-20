@@ -1,17 +1,26 @@
 'use client';
 
+import { useMemo } from 'react';
+
 interface ScaleControlProps {
   currentScale: number | null;
   currentUnit: string;
   scaleRatioLabel?: string | null;
+  scaleRatioValue?: number | null;
   scaleRatioDetail?: string | null;
   scaleSourceHint?: string | null;
   onRequestCalibrate?: () => void;
   displayUnit?: 'm' | 'ft';
+  scaleRatioApproximate?: boolean;
 }
 
-export default function ScaleControl({ currentScale, currentUnit, scaleRatioLabel, scaleRatioDetail, scaleSourceHint, onRequestCalibrate, displayUnit = 'm' }: ScaleControlProps) {
+export default function ScaleControl({ currentScale, currentUnit, scaleRatioLabel, scaleRatioValue, scaleRatioDetail, scaleSourceHint, onRequestCalibrate, displayUnit = 'm', scaleRatioApproximate = false }: ScaleControlProps) {
   // Manual numeric entry removed; prefer Calibrate on canvas
+  const ratioNumberFormat = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
+  const formattedScaleRatioValue =
+    typeof scaleRatioValue === 'number' && Number.isFinite(scaleRatioValue) && scaleRatioValue > 0
+      ? ratioNumberFormat.format(scaleRatioValue)
+      : null;
 
   const formattedScale = (() => {
     if (typeof currentScale !== 'number' || !Number.isFinite(currentScale) || currentScale <= 0) {
@@ -40,7 +49,12 @@ export default function ScaleControl({ currentScale, currentUnit, scaleRatioLabe
               <p className="text-xs text-green-600">
                 1 pixel ≈ {formattedScale ?? '—'} ({currentUnit})
               </p>
-              {scaleRatioLabel && (
+              {formattedScaleRatioValue && (
+                <p className="text-xs text-green-700 mt-1">
+                  Scale {scaleRatioApproximate ? '≈ ' : ''}1: {formattedScaleRatioValue} (1&nbsp;cm plan → {scaleRatioApproximate ? '≈ ' : ''}{formattedScaleRatioValue}&nbsp;cm real)
+                </p>
+              )}
+              {scaleRatioLabel && scaleRatioValue == null && (
                 <p className="text-xs text-green-700 mt-1">Scale ~ {scaleRatioLabel}</p>
               )}
               {scaleRatioDetail && (

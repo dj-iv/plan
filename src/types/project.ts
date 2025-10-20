@@ -43,6 +43,8 @@ export type ScaleMetadata = {
   /** Canvas draw dimensions when the scale was captured. */
   canvasWidth?: number;
   canvasHeight?: number;
+  /** Optional cache of the plan-side millimetres represented by a single pixel when calibration ran. */
+  planMmPerPixel?: number;
   /** Original unit label provided by the user (e.g. meters, feet). */
   unitLabel?: string;
   /** ISO timestamp string when calibration occurred; useful for diagnostics. */

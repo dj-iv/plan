@@ -18,11 +18,14 @@ import { computeFloorStatistics, normaliseUnit } from '@/utils/floorStats';
 import { onAuthChange, signInWithGoogle, signOutUser, getCurrentUser, ensureAnonymousAuth } from '@/lib/firebaseAuth';
 import { storage } from '@/lib/firebase';
 
+const CSS_MM_PER_PX = 25.4 / 96;
+
 declare global {
   interface WindowEventMap {
     'request-save': CustomEvent<void>;
   }
 }
+
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [imageUrl, setImageUrl] = useState<string>("");
@@ -97,7 +100,7 @@ export default function Home() {
     }
     return 'Unknown owner';
   }, []);
-  
+
   // Multi-floor state
   const [floors, setFloors] = useState<FloorEntry[]>([]);
   const [currentFloorId, setCurrentFloorId] = useState<string | null>(null);
@@ -113,21 +116,17 @@ export default function Home() {
     return floors.find(floor => floor.id === currentFloorId) ?? null;
   }, [floors, currentFloorId]);
 
-  const scalePresentation = useMemo(() => {
-    if (typeof scale !== 'number' || !isFinite(scale) || scale <= 0) {
-      return null;
-    }
+  const planScaleContext = useMemo(() => {
     if (!currentFloorEntry) {
       return null;
     }
 
     const canvasState = currentFloorEntry.canvasState || {};
-    const metadata = canvasState.scaleMetadata || null;
-    const imageWidthPx = metadata?.imageWidth ?? canvasState.originalImageWidth ?? null;
-    const imageHeightPx = metadata?.imageHeight ?? canvasState.originalImageHeight ?? null;
 
-    const widthMm = currentFloorEntry.sourcePageWidthMm ?? null;
-    const heightMm = currentFloorEntry.sourcePageHeightMm ?? null;
+    const renderScale = (currentFloorEntry.sourceRenderScale && Number.isFinite(currentFloorEntry.sourceRenderScale) && currentFloorEntry.sourceRenderScale > 0)
+      ? currentFloorEntry.sourceRenderScale
+      : 1;
+
     const toMmFromPoints = (points?: number | null) => {
       if (typeof points !== 'number' || !isFinite(points) || points <= 0) {
         return null;
@@ -135,34 +134,86 @@ export default function Home() {
       return (points / 72) * 25.4;
     };
 
+    const toPixelsFromPoints = (points?: number | null) => {
+      if (typeof points !== 'number' || !isFinite(points) || points <= 0) {
+        return null;
+      }
+      const CSS_UNITS = 96 / 72;
+      return points * CSS_UNITS * renderScale;
+    };
+
+    const toPixelsFromMillimetres = (mm?: number | null) => {
+      if (typeof mm !== 'number' || !isFinite(mm) || mm <= 0) {
+        return null;
+      }
+      return (mm / 25.4) * 96 * renderScale;
+    };
+
+    const widthMm = currentFloorEntry.sourcePageWidthMm ?? toMmFromPoints(currentFloorEntry.sourcePageWidthPoints ?? null) ?? null;
+    const heightMm = currentFloorEntry.sourcePageHeightMm ?? toMmFromPoints(currentFloorEntry.sourcePageHeightPoints ?? null) ?? null;
+
     const mmPerPixelCandidates: number[] = [];
-    if (widthMm && imageWidthPx) {
-      mmPerPixelCandidates.push(widthMm / imageWidthPx);
-    }
-    if (heightMm && imageHeightPx) {
-      mmPerPixelCandidates.push(heightMm / imageHeightPx);
+
+    if (widthMm) {
+      const widthPx = toPixelsFromPoints(currentFloorEntry.sourcePageWidthPoints ?? null)
+        ?? toPixelsFromMillimetres(widthMm);
+      if (widthPx && widthPx > 0) {
+        mmPerPixelCandidates.push(widthMm / widthPx);
+      }
     }
 
-    if (!mmPerPixelCandidates.length) {
-      const widthPoints = currentFloorEntry.sourcePageWidthPoints ?? null;
-      const heightPoints = currentFloorEntry.sourcePageHeightPoints ?? null;
-      const widthMmFromPoints = widthPoints ? toMmFromPoints(widthPoints) : null;
-      const heightMmFromPoints = heightPoints ? toMmFromPoints(heightPoints) : null;
-      if (widthMmFromPoints && imageWidthPx) {
-        mmPerPixelCandidates.push(widthMmFromPoints / imageWidthPx);
+    if (heightMm) {
+      const heightPx = toPixelsFromPoints(currentFloorEntry.sourcePageHeightPoints ?? null)
+        ?? toPixelsFromMillimetres(heightMm);
+      if (heightPx && heightPx > 0) {
+        mmPerPixelCandidates.push(heightMm / heightPx);
       }
-      if (heightMmFromPoints && imageHeightPx) {
-        mmPerPixelCandidates.push(heightMmFromPoints / imageHeightPx);
-      }
+    }
+
+    const metadata = canvasState.scaleMetadata || null;
+    if (metadata?.planMmPerPixel && Number.isFinite(metadata.planMmPerPixel) && metadata.planMmPerPixel > 0) {
+      mmPerPixelCandidates.push(metadata.planMmPerPixel);
     }
 
     const validCandidates = mmPerPixelCandidates.filter(value => Number.isFinite(value) && value > 0);
     if (!validCandidates.length) {
-      return null;
+      return {
+        planMmPerPixel: CSS_MM_PER_PX,
+        planScaleSource: 'fallback' as const,
+        renderScale,
+        sourcePlanType: currentFloorEntry.sourcePlanType ?? null,
+        widthMm,
+        heightMm,
+      };
     }
 
     const planMmPerPixel = validCandidates.reduce((acc, value) => acc + value, 0) / validCandidates.length;
     if (!Number.isFinite(planMmPerPixel) || planMmPerPixel <= 0) {
+      return {
+        planMmPerPixel: CSS_MM_PER_PX,
+        planScaleSource: 'fallback' as const,
+        renderScale,
+        sourcePlanType: currentFloorEntry.sourcePlanType ?? null,
+        widthMm,
+        heightMm,
+      };
+    }
+
+    return {
+      planMmPerPixel,
+      planScaleSource: 'metadata' as const,
+      renderScale,
+      sourcePlanType: currentFloorEntry.sourcePlanType ?? null,
+      widthMm,
+      heightMm,
+    };
+  }, [currentFloorEntry]);
+
+  const scalePresentation = useMemo(() => {
+    if (typeof scale !== 'number' || !isFinite(scale) || scale <= 0) {
+      return null;
+    }
+    if (!planScaleContext || !planScaleContext.planMmPerPixel || planScaleContext.planMmPerPixel <= 0) {
       return null;
     }
 
@@ -171,52 +222,52 @@ export default function Home() {
       return null;
     }
 
-    const ratio = realMmPerPixel / planMmPerPixel;
+    const ratio = realMmPerPixel / planScaleContext.planMmPerPixel;
     if (!Number.isFinite(ratio) || ratio <= 0) {
       return null;
     }
 
     if (process.env.NODE_ENV !== 'production') {
       console.debug('[scale:pdf-derived]', {
-        floorId: currentFloorEntry.id,
+        floorId: currentFloorEntry?.id,
         realMmPerPixel,
-        planMmPerPixel,
+        planMmPerPixel: planScaleContext.planMmPerPixel,
         ratio,
-        widthMm,
-        heightMm,
-        imageWidthPx,
-        imageHeightPx,
-        widthPoints: currentFloorEntry.sourcePageWidthPoints,
-        heightPoints: currentFloorEntry.sourcePageHeightPoints,
-        renderScale: currentFloorEntry.sourceRenderScale,
+        widthMm: planScaleContext.widthMm,
+        heightMm: planScaleContext.heightMm,
+        widthPoints: currentFloorEntry?.sourcePageWidthPoints,
+        heightPoints: currentFloorEntry?.sourcePageHeightPoints,
+        renderScale: planScaleContext.renderScale,
       });
     }
 
-    const roundedRatio = (() => {
-      if (ratio >= 200) return Math.round(ratio);
-      if (ratio >= 20) return Math.round(ratio * 10) / 10;
-      return Math.round(ratio * 100) / 100;
-    })();
+    const ratioFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+    const ratioCmRounded = Math.max(1, Math.round(ratio));
+    const ratioLabelPrefix = planScaleContext.planScaleSource === 'fallback' ? '≈ ' : '';
+    const ratioLabel = `${ratioLabelPrefix}1:${ratioFormatter.format(ratioCmRounded)}`;
 
-    const ratioFormatter = new Intl.NumberFormat(undefined, {
-      maximumFractionDigits: roundedRatio >= 100 ? 0 : roundedRatio >= 20 ? 1 : 2,
+    const metresReal = ratioCmRounded / 100;
+    const metresFormatter = new Intl.NumberFormat(undefined, {
+      maximumFractionDigits: metresReal >= 10 ? 1 : metresReal >= 1 ? 2 : 3,
     });
-    const ratioLabel = `1:${ratioFormatter.format(roundedRatio)}`;
+    const ratioDetail = `1 cm on plan ≈ ${metresFormatter.format(metresReal)} m real (${ratioFormatter.format(ratioCmRounded)} cm)`;
 
-    const cmRealMeters = ratio / 100;
-    const cmFormatter = new Intl.NumberFormat(undefined, {
-      maximumFractionDigits: cmRealMeters >= 10 ? 1 : cmRealMeters >= 1 ? 2 : 3,
-    });
-  const ratioDetail = `1 cm on plan ~ ${cmFormatter.format(cmRealMeters)} m real`;
-
-    const sourceHint = 'Derived from PDF page size metadata';
+    const sourceHint = planScaleContext.sourcePlanType === 'pdf'
+      ? `Derived from PDF page geometry${planScaleContext.renderScale !== 1 ? ` (render scale ×${planScaleContext.renderScale.toFixed(2)})` : ''}`
+      : 'Calibrated from supplied metadata';
 
     return {
       ratioLabel,
+      ratioValue: ratioCmRounded,
+      ratioExact: ratio,
       ratioDetail,
       sourceHint,
+      planMmPerPixel: planScaleContext.planMmPerPixel,
+      ratioApproximate: planScaleContext.planScaleSource === 'fallback',
     };
-  }, [scale, currentFloorEntry]);
+  }, [scale, planScaleContext, currentFloorEntry]);
+
+  const planMmPerPixelHint = planScaleContext?.planMmPerPixel ?? null;
 
   const resolveImageUrl = useCallback(async (metadata?: { imageUrl?: string; storagePath?: string; thumbnailUrl?: string }): Promise<string | null> => {
     if (!metadata) {
@@ -1643,8 +1694,10 @@ export default function Home() {
               currentScale={scale}
               currentUnit={unit}
               scaleRatioLabel={scalePresentation?.ratioLabel ?? null}
+              scaleRatioValue={scalePresentation?.ratioValue ?? null}
               scaleRatioDetail={scalePresentation?.ratioDetail ?? null}
               scaleSourceHint={scalePresentation?.sourceHint ?? null}
+              scaleRatioApproximate={scalePresentation?.ratioApproximate ?? false}
               displayUnit={displayUnit}
               onRequestCalibrate={() => setCalibrateTick(t => t + 1)}
             />
@@ -1684,6 +1737,14 @@ export default function Home() {
           scale={scale} 
           scaleUnit={unit}
           scaleRatioLabel={scalePresentation?.ratioLabel ?? null}
+          scaleRatioValue={scalePresentation?.ratioValue ?? null}
+          planMmPerPixel={planMmPerPixelHint}
+          planPageWidthMm={currentFloorEntry?.sourcePageWidthMm ?? null}
+          planPageHeightMm={currentFloorEntry?.sourcePageHeightMm ?? null}
+          planPageWidthPoints={currentFloorEntry?.sourcePageWidthPoints ?? null}
+          planPageHeightPoints={currentFloorEntry?.sourcePageHeightPoints ?? null}
+          planRenderScale={currentFloorEntry?.sourceRenderScale ?? null}
+          planScaleSource={planScaleContext?.planScaleSource}
           displayUnit={displayUnit}
           onDisplayUnitChange={setDisplayUnit}
           onCalibrate={(s,u)=>{ 
