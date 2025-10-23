@@ -177,6 +177,10 @@ NEXT_PUBLIC_FIREBASE_APP_ID=your_app_id
 
 # Restrict app sign-in to specific Google Workspace domains (comma-separated)
 NEXT_PUBLIC_ALLOWED_GOOGLE_DOMAINS=uctel.co.uk
+
+# UCtel portal integration
+PORTAL_SIGNING_SECRET=matching_secret_from_portal
+NEXT_PUBLIC_PORTAL_URL=https://portal.yourdomain.co.uk
 ```
 
 ### Firebase Security Rules

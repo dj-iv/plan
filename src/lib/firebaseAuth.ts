@@ -1,4 +1,58 @@
-import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, User } from 'firebase/auth';
+import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, signInWithCustomToken, User } from 'firebase/auth';
+
+const PORTAL_BASE_URL = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.PORTAL_URL || 'http://localhost:3000';
+const PORTAL_APP_ID = 'floorplan';
+
+function resolveRedirectTarget(explicit?: string): string {
+  if (explicit && explicit.length > 0) {
+    return explicit;
+  }
+  if (typeof window !== 'undefined') {
+    return window.location.href;
+  }
+  return '/';
+}
+
+function buildPortalLaunchUrl(redirectTarget: string): string {
+  try {
+    const base = new URL(PORTAL_BASE_URL);
+    const launchUrl = new URL(`/launch/${PORTAL_APP_ID}`, base);
+    if (redirectTarget) {
+      launchUrl.searchParams.set('redirect', redirectTarget);
+    }
+    return launchUrl.toString();
+  } catch {
+    const trimmed = PORTAL_BASE_URL.endsWith('/') ? PORTAL_BASE_URL.slice(0, -1) : PORTAL_BASE_URL;
+    return redirectTarget
+      ? `${trimmed}/launch/${PORTAL_APP_ID}?redirect=${encodeURIComponent(redirectTarget)}`
+      : `${trimmed}/launch/${PORTAL_APP_ID}`;
+  }
+}
+
+function buildPortalLogoutUrl(redirectTarget: string): string {
+  try {
+    const base = new URL(PORTAL_BASE_URL);
+    const logoutUrl = new URL('/login', base);
+    if (redirectTarget) {
+      logoutUrl.searchParams.set('redirect', redirectTarget);
+    }
+    logoutUrl.searchParams.set('logout', '1');
+    return logoutUrl.toString();
+  } catch {
+    const trimmed = PORTAL_BASE_URL.endsWith('/') ? PORTAL_BASE_URL.slice(0, -1) : PORTAL_BASE_URL;
+    const redirectParam = redirectTarget ? `redirect=${encodeURIComponent(redirectTarget)}&` : '';
+    return `${trimmed}/login?${redirectParam}logout=1`;
+  }
+}
+
+export function beginPortalSignIn(redirectTarget?: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const target = resolveRedirectTarget(redirectTarget);
+  const launchUrl = buildPortalLaunchUrl(target);
+  window.location.assign(launchUrl);
+}
 
 function getAllowedDomains(): string[] {
   // Default to uctel.co.uk if not configured to prevent accidental open access
@@ -33,7 +87,19 @@ export async function ensureAnonymousAuth(): Promise<void> {
     }
     return;
   }
-  // No user: return silently; callers should present a Login button.
+  // Attempt silent sign-in via portal session cookie if available
+  try {
+    const portalUser = await signInWithPortalSession();
+    if (portalUser) {
+      return;
+    }
+  } catch (error) {
+    console.warn('Portal session sign-in failed:', error);
+  }
+  if (typeof window !== 'undefined') {
+    beginPortalSignIn(window.location.href);
+  }
+  throw new Error('Portal login required. Redirecting to UCtel Portal.');
 }
 
 export function getCurrentUser(): User | null {
@@ -65,9 +131,92 @@ export async function signInWithGoogle(): Promise<User> {
   return user;
 }
 
+interface PortalSessionResponse {
+  token: string;
+  email: string | null;
+  displayName: string | null;
+}
+
+export async function signInWithPortalSession(): Promise<User | null> {
+  const auth = getAuth();
+  try {
+    const response = await fetch('/api/portal/session', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+    });
+
+    if (response.status === 401) {
+      return null;
+    }
+
+    if (response.status === 501) {
+      console.warn('Portal session exchange is not configured on the server.');
+      return null;
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Portal session exchange failed (${response.status}): ${errorText}`);
+    }
+
+    const body = await response.json() as PortalSessionResponse;
+    if (!body.token) {
+      throw new Error('Portal session response missing token.');
+    }
+
+    const credential = await signInWithCustomToken(auth, body.token);
+    const user = credential.user;
+    if (!isEmailAllowed(user.email)) {
+      try { await signOut(auth); } catch {}
+      throw new Error('Access denied: your Google account is not permitted.');
+    }
+    return user;
+  } catch (error) {
+    console.error('signInWithPortalSession error:', error);
+    return null;
+  }
+}
+
 export async function signOutUser(): Promise<void> {
   const auth = getAuth();
   await signOut(auth);
+}
+
+export async function signOutToPortal(redirectTarget?: string): Promise<void> {
+  const target = resolveRedirectTarget(redirectTarget);
+  try {
+    await signOutUser();
+  } catch (error) {
+    console.warn('Firebase sign-out failed during portal logout', error);
+  }
+
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/portal/logout', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ redirect: target }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (response.ok && typeof payload?.redirect === 'string' && payload.redirect.length > 0) {
+      window.location.assign(payload.redirect);
+      return;
+    }
+    console.warn('Portal logout endpoint returned unexpected response', { status: response.status, payload });
+  } catch (error) {
+    console.error('Portal logout request failed', error);
+  }
+
+  window.location.assign(buildPortalLogoutUrl(target));
 }
 
 export function onAuthChange(cb: (user: User | null) => void): () => void {

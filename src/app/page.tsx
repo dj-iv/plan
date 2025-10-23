@@ -15,7 +15,7 @@ import { CanvasState, ProjectSummary, FloorSummary, FloorData, FloorEntry, Units
 import { FloorNameAiStatus, FloorNameAiResponse } from '@/types/ai';
 import { captureCanvasThumbnail } from '@/utils/thumbnail';
 import { computeFloorStatistics, normaliseUnit } from '@/utils/floorStats';
-import { onAuthChange, signInWithGoogle, signOutUser, getCurrentUser, ensureAnonymousAuth } from '@/lib/firebaseAuth';
+import { onAuthChange, signOutToPortal, getCurrentUser, ensureAnonymousAuth } from '@/lib/firebaseAuth';
 import { storage } from '@/lib/firebase';
 
 const CSS_MM_PER_PX = 25.4 / 96;
@@ -81,6 +81,12 @@ export default function Home() {
       displayName,
     };
   }, []);
+
+  useEffect(() => {
+    const user = getCurrentUser();
+    setAuthEmail(user?.email || null);
+    setCurrentEngineer(deriveEngineer({ displayName: user?.displayName, email: user?.email, uid: user?.uid }));
+  }, [deriveEngineer]);
 
   const resolveOwnerName = useCallback((engineer?: ProjectEngineer | null): string => {
     if (!engineer) return 'Unknown owner';
@@ -1568,25 +1574,14 @@ export default function Home() {
                   <>
                     <span className="text-white/90 text-sm hidden sm:inline">{authEmail}</span>
                     <button
-                      onClick={() => signOutUser()}
+                      onClick={() => { void signOutToPortal(); }}
                       className="px-3 py-2 rounded-full bg-white/10 text-white border border-white/20 hover:bg-white/20 text-sm transition"
                     >
                       Logout
                     </button>
                   </>
                 ) : (
-                  <button
-                    onClick={async () => {
-                      try {
-                        await signInWithGoogle();
-                      } catch (e: any) {
-                        alert(e?.message || 'Login failed. Please use your corporate Google account.');
-                      }
-                    }}
-                    className="px-4 py-2 rounded-full bg-white text-[#16899A] hover:bg-blue-50 text-sm transition"
-                  >
-                    Login with Google
-                  </button>
+                  <span className="text-white/80 text-sm">Redirecting to UCtel Portal…</span>
                 )}
               </div>
             </div>
