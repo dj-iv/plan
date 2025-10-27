@@ -181,7 +181,11 @@ NEXT_PUBLIC_ALLOWED_GOOGLE_DOMAINS=uctel.co.uk
 # UCtel portal integration
 PORTAL_SIGNING_SECRET=matching_secret_from_portal
 NEXT_PUBLIC_PORTAL_URL=https://portal.yourdomain.co.uk
+# Optional: bypass portal redirect during local development only
+# PORTAL_DEV_BYPASS=1
 ```
+
+When working locally without the portal, set `PORTAL_DEV_BYPASS=1` (and optionally `PORTAL_DEV_BYPASS_COOKIE` for a custom placeholder cookie) to skip the redirect enforced by the middleware. The flag is ignored in production builds.
 
 ### Firebase Security Rules
 

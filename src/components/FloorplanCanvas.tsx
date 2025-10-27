@@ -104,6 +104,7 @@ const CANVAS_VERTICAL_PADDING = 16;
 const CANVAS_EDGE_MARGIN = 16;
 const SUMMARY_GAP = 32;
 const CSS_MM_PER_PX = 25.4 / 96; // Fallback plan millimetres per CSS pixel when PDF metadata is unavailable
+const MAX_FIT_WIDTH_SCALE = 6;
 
 // Snapshot of canvas state for undo/redo and save payloads
 interface Snapshot {
@@ -337,7 +338,17 @@ export default function FloorplanCanvas({
   const [manualHoles, setManualHoles] = useState<Point[][]>([]);
   const [manualResult, setManualResult] = useState<number | null>(null);
   const manualActive = manualRegions.length > 0 || manualHoles.length > 0 || currentArea.length >= 1;
-  const summaryVisible = (selections.length > 0 || floors.length > 0);
+  const [isSummaryOpen, setIsSummaryOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+    try {
+      return window.localStorage.getItem('floorplan-summary-open') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const summaryVisible = isSummaryOpen;
   const [summaryTopOffset, setSummaryTopOffset] = useState(CANVAS_VERTICAL_PADDING);
 
   const multiDeleteStartRef = useRef<Point | null>(null);
@@ -356,6 +367,14 @@ export default function FloorplanCanvas({
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const [screenshotMessage, setScreenshotMessage] = useState<string | null>(null);
   const screenshotMessageTimeoutRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem('floorplan-summary-open', isSummaryOpen ? '1' : '0');
+    } catch {}
+  }, [isSummaryOpen]);
   useEffect(() => {
     const updateHeight = () => {
       if (controlsRef.current) {
@@ -400,6 +419,11 @@ export default function FloorplanCanvas({
   }, []);
 
   useEffect(() => {
+    if (!isSummaryOpen) {
+      setSummaryWidth(0);
+      return;
+    }
+
     const updateWidth = () => {
       const width = summaryRef.current?.offsetWidth || 0;
       setSummaryWidth(prev => (Math.abs(prev - width) > 1 ? width : prev));
@@ -419,9 +443,14 @@ export default function FloorplanCanvas({
       window.removeEventListener('resize', updateWidth);
       if (observer) observer.disconnect();
     };
-  }, [floors.length, selections.length]);
+  }, [floors.length, selections.length, isSummaryOpen]);
 
   useEffect(() => {
+    if (!isSummaryOpen) {
+      setSummaryTopOffset(CANVAS_VERTICAL_PADDING);
+      return;
+    }
+
     const measureOffset = () => {
       const parentEl = summaryRef.current?.offsetParent as HTMLElement | null;
       const containerEl = containerRef.current;
@@ -451,7 +480,7 @@ export default function FloorplanCanvas({
       window.removeEventListener('resize', rafMeasure);
       if (resizeObserver) resizeObserver.disconnect();
     };
-  }, [controlsHeight, canvasSize.width, canvasSize.height, summaryWidth, summaryVisible]);
+  }, [controlsHeight, canvasSize.width, canvasSize.height, summaryWidth, isSummaryOpen]);
 
   const [showCoverage, setShowCoverage] = useState<boolean>(true);
   const [showRadiusBoundary, setShowRadiusBoundary] = useState<boolean>(true);
@@ -676,7 +705,9 @@ export default function FloorplanCanvas({
     if (!Number.isFinite(availWidth) || availWidth <= 0) availWidth = safeWidth;
     if (!Number.isFinite(availHeight) || availHeight <= 0) availHeight = safeHeight;
 
-    const scale = Math.min(availWidth / safeWidth, availHeight / safeHeight, 1);
+    const widthRatio = availWidth / safeWidth;
+    let scale = Number.isFinite(widthRatio) && widthRatio > 0 ? widthRatio : 1;
+    scale = Math.min(Math.max(scale, 0.1), MAX_FIT_WIDTH_SCALE);
     return {
       width: Math.max(1, Math.round(safeWidth * scale)),
       height: Math.max(1, Math.round(safeHeight * scale)),
@@ -687,10 +718,12 @@ export default function FloorplanCanvas({
     if (!image) return;
     const savedWidthRaw = loadedCanvasState?.canvasWidth;
     const savedHeightRaw = loadedCanvasState?.canvasHeight;
-    const savedWidth = typeof savedWidthRaw === 'number' && Number.isFinite(savedWidthRaw) ? savedWidthRaw : 0;
-    const savedHeight = typeof savedHeightRaw === 'number' && Number.isFinite(savedHeightRaw) ? savedHeightRaw : 0;
-    const baseWidth = Math.max(image.width || 0, savedWidth);
-    const baseHeight = Math.max(image.height || 0, savedHeight);
+  const savedWidth = typeof savedWidthRaw === 'number' && Number.isFinite(savedWidthRaw) ? savedWidthRaw : 0;
+  const savedHeight = typeof savedHeightRaw === 'number' && Number.isFinite(savedHeightRaw) ? savedHeightRaw : 0;
+  const naturalWidth = image.naturalWidth || image.width || 0;
+  const naturalHeight = image.naturalHeight || image.height || 0;
+  const baseWidth = Math.max(naturalWidth, savedWidth);
+  const baseHeight = Math.max(naturalHeight, savedHeight);
     if (!baseWidth || !baseHeight) return;
     setCanvasSize(prev => {
       const fitted = computeFittedCanvasSize(baseWidth, baseHeight);
@@ -727,15 +760,21 @@ export default function FloorplanCanvas({
       const img = new Image();
 
       img.onload = () => {
-        console.log('FloorplanCanvas: Image loaded successfully', { width: img.width, height: img.height });
+        const naturalWidth = img.naturalWidth || img.width || 0;
+        const naturalHeight = img.naturalHeight || img.height || 0;
+        // Preserve intrinsic dimensions so downstream sizing logic never sees zero values
+        if (naturalWidth > 0) img.width = naturalWidth;
+        if (naturalHeight > 0) img.height = naturalHeight;
+
+        console.log('FloorplanCanvas: Image loaded successfully', { width: img.width, height: img.height, naturalWidth, naturalHeight });
         setImage(img);
 
         const savedCanvasWidthRaw = loadedCanvasState?.canvasWidth;
         const savedCanvasHeightRaw = loadedCanvasState?.canvasHeight;
         const savedCanvasWidth = typeof savedCanvasWidthRaw === 'number' && Number.isFinite(savedCanvasWidthRaw) ? savedCanvasWidthRaw : 0;
         const savedCanvasHeight = typeof savedCanvasHeightRaw === 'number' && Number.isFinite(savedCanvasHeightRaw) ? savedCanvasHeightRaw : 0;
-        const baseWidth = Math.max(img.width || 0, savedCanvasWidth);
-        const baseHeight = Math.max(img.height || 0, savedCanvasHeight);
+        const baseWidth = Math.max(naturalWidth, savedCanvasWidth);
+        const baseHeight = Math.max(naturalHeight, savedCanvasHeight);
         const fittedSize = computeFittedCanvasSize(baseWidth, baseHeight);
         setCanvasSize(prev => {
           if (Math.abs((prev?.width || 0) - fittedSize.width) < 2 && Math.abs((prev?.height || 0) - fittedSize.height) < 2) {
@@ -798,10 +837,12 @@ export default function FloorplanCanvas({
     const recalc = () => {
       const savedWidthRaw = loadedCanvasState?.canvasWidth;
       const savedHeightRaw = loadedCanvasState?.canvasHeight;
-      const savedWidth = typeof savedWidthRaw === 'number' && Number.isFinite(savedWidthRaw) ? savedWidthRaw : 0;
-      const savedHeight = typeof savedHeightRaw === 'number' && Number.isFinite(savedHeightRaw) ? savedHeightRaw : 0;
-      const baseWidth = Math.max(image.width || 0, savedWidth);
-      const baseHeight = Math.max(image.height || 0, savedHeight);
+  const savedWidth = typeof savedWidthRaw === 'number' && Number.isFinite(savedWidthRaw) ? savedWidthRaw : 0;
+  const savedHeight = typeof savedHeightRaw === 'number' && Number.isFinite(savedHeightRaw) ? savedHeightRaw : 0;
+  const naturalWidth = image.naturalWidth || image.width || 0;
+  const naturalHeight = image.naturalHeight || image.height || 0;
+  const baseWidth = Math.max(naturalWidth, savedWidth);
+  const baseHeight = Math.max(naturalHeight, savedHeight);
       if (!baseWidth || !baseHeight) return;
       setCanvasSize(prev => {
         const fitted = computeFittedCanvasSize(baseWidth, baseHeight);
@@ -2597,6 +2638,7 @@ export default function FloorplanCanvas({
 
   // Zoom with wheel
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
     const delta = -Math.sign(e.deltaY) * 0.1;
     const newZoom = Math.min(5, Math.max(0.2, zoom + delta));
     if (newZoom === zoom) return;
@@ -4659,10 +4701,12 @@ export default function FloorplanCanvas({
       {/* Canvas */}
       <div
         ref={containerRef}
-        className="relative flex flex-1 min-h-0 items-end overflow-hidden"
+        className="relative flex flex-1 min-h-0 items-start"
         style={{
           overscrollBehavior: 'contain',
-          touchAction: 'none',
+          touchAction: 'pan-y',
+          overflowY: 'auto',
+          overflowX: 'hidden',
           paddingLeft: CANVAS_EDGE_MARGIN,
           paddingTop: CANVAS_VERTICAL_PADDING,
           paddingBottom: CANVAS_VERTICAL_PADDING,
@@ -4670,7 +4714,7 @@ export default function FloorplanCanvas({
         }}
       >
         {imageLoaded ? (
-          <div className="flex h-full w-full items-end justify-start">
+          <div className="flex h-full w-full items-start justify-start">
             <canvas
               ref={canvasRef}
               onClick={handleCanvasClick}
@@ -4686,7 +4730,6 @@ export default function FloorplanCanvas({
                 width: canvasSize.width || undefined,
                 height: canvasSize.height || undefined,
                 maxWidth: '100%',
-                maxHeight: '100%',
               }}
             />
           </div>
@@ -4748,29 +4791,48 @@ export default function FloorplanCanvas({
       )}
 
   {/* Area Results - Professional */}
-  {(selections.length > 0 || floors.length > 0) && (
+  {summaryVisible && (
         <div
           ref={summaryRef}
-          className="absolute z-[1100] p-4 bg-white/95 border rounded-lg shadow flex flex-col min-w-80 max-w-96"
+          className="absolute z-[1100] bg-transparent"
           style={{ top: summaryTopOffset, bottom: CANVAS_VERTICAL_PADDING, right: CANVAS_EDGE_MARGIN }}>
-          <h3 className="font-semibold text-gray-900 mb-4">Summary</h3>
+          <div className="relative flex h-full flex-col rounded-lg border bg-white/90 p-4 shadow min-w-80 max-w-96">
+            <button
+              type="button"
+              onClick={() => setIsSummaryOpen(false)}
+              className="absolute right-3 top-3 rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600 shadow hover:bg-gray-200"
+            >
+              Hide
+            </button>
+            <h3 className="mb-4 pr-12 text-lg font-semibold text-gray-900">Summary</h3>
 
-          {/* Floors Panel - Always show so Add Floor button is available */}
-          <FloorsPanel
-            floors={floors}
-            currentFloorId={currentFloorId}
-            onSelectFloor={onSelectFloor || (() => {})}
-            onRenameFloor={onRenameFloor || (() => {})}
-            onDeleteFloor={onDeleteFloor || (() => {})}
-            onAddFloor={onAddFloor || (() => {})}
-            isLoading={floorsLoading}
-            onDetectFloorName={onDetectFloorName}
-            aiNameStatus={floorNameAiStatus}
-            formatAreaValue={formatAreaDisplay}
-            formatRadiusValue={formatRadiusValue}
-            className="flex-1 overflow-y-auto pr-1"
-          />
+            {/* Floors Panel - Always show so Add Floor button is available */}
+            <FloorsPanel
+              floors={floors}
+              currentFloorId={currentFloorId}
+              onSelectFloor={onSelectFloor || (() => {})}
+              onRenameFloor={onRenameFloor || (() => {})}
+              onDeleteFloor={onDeleteFloor || (() => {})}
+              onAddFloor={onAddFloor || (() => {})}
+              isLoading={floorsLoading}
+              onDetectFloorName={onDetectFloorName}
+              aiNameStatus={floorNameAiStatus}
+              formatAreaValue={formatAreaDisplay}
+              formatRadiusValue={formatRadiusValue}
+              className="flex-1 overflow-y-auto pr-1"
+            />
+          </div>
         </div>
+      )}
+
+  {!summaryVisible && (
+        <button
+          type="button"
+          onClick={() => setIsSummaryOpen(true)}
+          className="absolute right-4 top-4 z-[1100] rounded-full bg-white/90 px-4 py-2 text-sm font-medium text-gray-700 shadow hover:bg-white"
+        >
+          Show summary
+        </button>
       )}
 
   {/* Current area/path status - Professional */}

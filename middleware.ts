@@ -23,7 +23,24 @@ export function middleware(request: NextRequest) {
   }
 
   const sessionCookieName = getSessionCookieName()
-  if (request.cookies.has(sessionCookieName)) {
+  const hasSession = request.cookies.has(sessionCookieName)
+  const devBypassFlag = (process.env.PORTAL_DEV_BYPASS ?? '').toLowerCase()
+  const devBypassEnabled =
+    process.env.NODE_ENV !== 'production' && (devBypassFlag === '1' || devBypassFlag === 'true' || devBypassFlag === 'yes')
+
+  if (hasSession || devBypassEnabled) {
+    if (devBypassEnabled && !hasSession) {
+      const response = NextResponse.next()
+      const cookieValue = process.env.PORTAL_DEV_BYPASS_COOKIE ?? 'dev-bypass'
+      response.cookies.set({
+        name: sessionCookieName,
+        value: cookieValue,
+        path: '/',
+        sameSite: 'lax',
+        httpOnly: false,
+      })
+      return response
+    }
     return NextResponse.next()
   }
 
