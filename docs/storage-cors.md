@@ -20,7 +20,8 @@ gsutil cors set firebase/storage-cors.json gs://plan-13b4e.firebasestorage.app
 
 The `firebase/storage-cors.json` file currently allows the following origins:
 
-- `http://localhost:3000` (local development)
+- `http://localhost:3303` (floorplan local development)
+- `http://localhost:3300` (portal-based local workflows)
 - `https://plan.uctel.co.uk` (production)
 
 The policy exposes common headers required for authenticated fetches and caches pre-flight responses for 1 hour.

@@ -1,8 +1,8 @@
 [
   {
     "origin": [
-      "http://localhost:3000",
-      "http://localhost:3001",
+  "http://localhost:3303",
+  "http://localhost:3300",
       "https://plan.uctel.co.uk"
     ],
     "method": [

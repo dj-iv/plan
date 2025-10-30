@@ -13,7 +13,7 @@ const SESSION_COOKIE = 'uctel_plan_session'
 const SESSION_DURATION_SECONDS = 60 * 60 * 5 // 5 hours
 
 export function getPortalBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_PORTAL_URL || process.env.PORTAL_URL || 'http://localhost:3000'
+  return process.env.NEXT_PUBLIC_PORTAL_URL || process.env.PORTAL_URL || 'http://localhost:3300'
 }
 
 export interface PortalLaunchPayload {

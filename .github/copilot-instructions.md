@@ -17,7 +17,7 @@
 	<!-- Project builds successfully with Next.js 14.2.5 -->
 
 - [x] Create and Run Task
-	<!-- Development server task created and running on http://localhost:3000 -->
+	<!-- Development server task created and running on http://localhost:3303 -->
 
 - [x] Launch the Project
 	<!-- Development server is running and ready for testing -->

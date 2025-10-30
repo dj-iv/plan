@@ -5,7 +5,7 @@
   "scripts": {
     "predev": "node scripts/prebuild-clean.js",
     "prebuild": "node scripts/prebuild-clean.js",
-    "dev": "next dev",
+  "dev": "next dev -p 3303",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
