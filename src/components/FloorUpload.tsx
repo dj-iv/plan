@@ -109,7 +109,7 @@ export default function FloorUpload({ onFilesUpload, onCancel, disabled = false,
           maxPages: MAX_PDF_PAGES,
           floorThreshold: PDF_FLOOR_THRESHOLD,
           textThreshold: PDF_TEXT_THRESHOLD,
-          scale: 2,
+          scale: 4,
         });
 
         const floorCandidates = extraction.pages.filter(page => page.classification !== 'text');

@@ -281,4 +281,6 @@ export type FloorEntry = {
   sourcePageWidthPoints?: number | null;
   sourcePageHeightPoints?: number | null;
   sourceRenderScale?: number | null;
+  /** True when user has manually renamed the floor - prevents AI from overriding */
+  manuallyNamed?: boolean;
 };

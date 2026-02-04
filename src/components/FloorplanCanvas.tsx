@@ -38,7 +38,7 @@ interface FloorplanCanvasProps {
   floors?: import('@/types/project').FloorSummary[];
   currentFloorId?: string | null;
   onSelectFloor?: (floorId: string) => void;
-  onRenameFloor?: (floorId: string, name: string) => void;
+  onRenameFloor?: (floorId: string, name: string, isManual?: boolean) => void;
   onDeleteFloor?: (floorId: string) => void;
   onAddFloor?: () => void;
   floorsLoading?: boolean;

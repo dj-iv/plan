@@ -7,7 +7,7 @@ interface FloorsPanelProps {
   floors: FloorSummary[];
   currentFloorId: string | null;
   onSelectFloor: (floorId: string) => void;
-  onRenameFloor: (floorId: string, name: string) => void;
+  onRenameFloor: (floorId: string, name: string, isManual?: boolean) => void;
   onDeleteFloor: (floorId: string) => void;
   onAddFloor: () => void;
   isLoading?: boolean;
@@ -109,7 +109,7 @@ export default function FloorsPanel({
 
   const saveEdit = useCallback(() => {
     if (editingFloor && editValue.trim()) {
-      onRenameFloor(editingFloor, editValue.trim());
+      onRenameFloor(editingFloor, editValue.trim(), true);
     }
     setEditingFloor(null);
     setEditValue('');

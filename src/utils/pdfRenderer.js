@@ -7,7 +7,7 @@
 
 let pdfjsLib;
 
-const DEFAULT_RENDER_SCALE = 2;
+const DEFAULT_RENDER_SCALE = 4;
 const SAMPLE_TARGET_PIXELS = 400000;
 const MAX_SAMPLE_STEP = 8;
 

@@ -49,6 +49,8 @@ export default function Home() {
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState<string>('');
   const [sortBy, setSortBy] = useState<'lastOpened'|'name'|'antennas'>('lastOpened');
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editingProjectName, setEditingProjectName] = useState<string>('');
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const [, setCurrentEngineer] = useState<ProjectEngineer | null>(null);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
@@ -563,6 +565,22 @@ export default function Home() {
     }
   }, [projects, loadProjects]);
 
+  const handleRenameProject = useCallback(async (projectId: string, newName: string) => {
+    if (!newName.trim()) return;
+    try {
+      setIsLoading(true);
+      await ProjectService.renameProject(projectId, newName.trim());
+      setEditingProjectId(null);
+      setEditingProjectName('');
+      await loadProjects();
+    } catch (e) {
+      console.error('Rename failed', e);
+      alert('Failed to rename project.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadProjects]);
+
   const handleDeleteSelected = useCallback(async () => {
     if (selectedProjectIds.size === 0) return;
     if (!confirm(`Delete ${selectedProjectIds.size} selected project(s)? This cannot be undone.`)) return;
@@ -619,14 +637,16 @@ export default function Home() {
       }
       entries.sort((a, b) => a.orderIndex - b.orderIndex);
       setFloors(entries);
+      // Add all entries to autoFloorNameAttemptsRef BEFORE setting statuses
+      // This prevents the auto-detection effect from triggering on loaded floors
+      entries.forEach(entry => {
+        autoFloorNameAttemptsRef.current.add(entry.id);
+      });
       const statusMap: Record<string, FloorNameAiStatus> = {};
       entries.forEach(entry => {
         statusMap[entry.id] = { status: 'idle' };
       });
       setFloorNameAiStatuses(statusMap);
-      entries.forEach(entry => {
-        autoFloorNameAttemptsRef.current.add(entry.id);
-      });
 
       if (!currentFloorId && entries.length > 0) {
         setCurrentFloorId(entries[0].id);
@@ -908,7 +928,12 @@ export default function Home() {
     setFloorUploadTargetProjectId(null);
   }, []);
 
-  const handleRenameFloor = useCallback(async (floorId: string, name: string) => {
+  const handleRenameFloor = useCallback(async (floorId: string, name: string, isManual = false) => {
+    // If manually renamed, prevent future auto-detection on this floor
+    if (isManual) {
+      autoFloorNameAttemptsRef.current.add(floorId);
+    }
+    
     if (!currentProjectId) {
       // For unsaved projects, just update local state
       updateFloorEntry(floorId, floor => ({
@@ -916,6 +941,7 @@ export default function Home() {
         name,
         dirty: true,
         updatedAt: new Date(),
+        ...(isManual ? { manuallyNamed: true } : {}),
       }));
       setInfoMessage(`Floor renamed to "${name}"`);
       setTimeout(() => setInfoMessage(null), 2000);
@@ -925,6 +951,12 @@ export default function Home() {
     try {
       await FloorService.renameFloor(currentProjectId, floorId, name);
       await loadFloors(currentProjectId);
+      // Mark as manually named after reload if it was a manual rename
+      if (isManual) {
+        updateFloorEntry(floorId, floor => ({ ...floor, manuallyNamed: true }));
+        // Ensure the floor stays in the attempts set after reload
+        autoFloorNameAttemptsRef.current.add(floorId);
+      }
       setInfoMessage(`Floor renamed to "${name}"`);
       setTimeout(() => setInfoMessage(null), 2000);
     } catch (e) {
@@ -1192,7 +1224,19 @@ export default function Home() {
             loaded: true,
             stateHash: entryHash,
           });
+          // Preserve AI detection state for the new floor ID
+          autoFloorNameAttemptsRef.current.add(newFloorId);
         }
+        // Update floorNameAiStatuses with new floor IDs before setting floors
+        setFloorNameAiStatuses(prev => {
+          const next: Record<string, FloorNameAiStatus> = {};
+          for (let i = 0; i < floors.length; i++) {
+            const oldId = floors[i].id;
+            const newId = idMap[oldId] || oldId;
+            next[newId] = prev[oldId] || { status: 'idle' };
+          }
+          return next;
+        });
         setFloors(newEntries);
         if (latestCanvasState) {
           setLoadedCanvasState(latestCanvasState);
@@ -1264,9 +1308,22 @@ export default function Home() {
             loaded: true,
             stateHash: entryHash,
           });
+          // Preserve AI detection state for the new floor ID
+          autoFloorNameAttemptsRef.current.add(newFloorId);
         }
       }
 
+      // Update floorNameAiStatuses with any new floor IDs before setting floors
+      if (Object.keys(idMap).length > 0) {
+        setFloorNameAiStatuses(prev => {
+          const next: Record<string, FloorNameAiStatus> = {};
+          for (const entry of updatedEntries) {
+            const oldId = Object.entries(idMap).find(([, newId]) => newId === entry.id)?.[0];
+            next[entry.id] = prev[oldId || entry.id] || { status: 'idle' };
+          }
+          return next;
+        });
+      }
       setFloors(updatedEntries);
       if (latestCanvasState) {
         setLoadedCanvasState(latestCanvasState);
@@ -1283,7 +1340,8 @@ export default function Home() {
       setJustSaved(true);
       setTimeout(() => setJustSaved(false), 1500);
       loadProjects();
-      await loadFloors(currentProjectId);
+      // Don't call loadFloors here - we already have the updated entries
+      // and calling it would reset floorNameAiStatuses triggering AI detection
       if (latestCanvasState) {
         setLoadedCanvasState(latestCanvasState);
       }
@@ -1293,7 +1351,7 @@ export default function Home() {
     } finally {
       setIsSaving(false);
     }
-  }, [isSaving, currentProjectId, currentProjectName, floors, currentFloorId, unit, computeStateHash, loadProjects, loadFloors]);
+  }, [isSaving, currentProjectId, currentProjectName, floors, currentFloorId, unit, computeStateHash, loadProjects]);
 
   const handleLoadProject = useCallback(async (projectId: string) => {
     const currentEmail = getCurrentUser()?.email || authEmail;
@@ -1644,7 +1702,26 @@ export default function Home() {
                         )}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between">
-                            <h3 className="font-medium text-gray-900 pr-4 break-words">{project.name}</h3>
+                            {editingProjectId === project.id ? (
+                              <form 
+                                className="flex items-center gap-2 flex-1 pr-4"
+                                onSubmit={(e) => { e.preventDefault(); handleRenameProject(project.id, editingProjectName); }}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <input
+                                  type="text"
+                                  value={editingProjectName}
+                                  onChange={(e) => setEditingProjectName(e.target.value)}
+                                  className="flex-1 px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  autoFocus
+                                  onKeyDown={(e) => { if (e.key === 'Escape') { setEditingProjectId(null); setEditingProjectName(''); } }}
+                                />
+                                <button type="submit" className="px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600" disabled={isLoading}>Save</button>
+                                <button type="button" className="px-2 py-1 bg-gray-300 text-gray-700 rounded text-xs hover:bg-gray-400" onClick={() => { setEditingProjectId(null); setEditingProjectName(''); }}>Cancel</button>
+                              </form>
+                            ) : (
+                              <h3 className="font-medium text-gray-900 pr-4 break-words">{project.name}</h3>
+                            )}
                             <div className="flex items-center gap-3">
                               <span className="text-xs text-gray-500 whitespace-nowrap">Owner: {ownerName}</span>
                               <span className="text-xs text-gray-500 whitespace-nowrap">{lastLabel}: {last.toLocaleString()}</span>
@@ -1656,6 +1733,13 @@ export default function Home() {
                           </div>
                         </div>
                         <div className="flex items-center gap-2 ml-2" onClick={(e)=>e.stopPropagation()}>
+                          <button
+                            className="px-3 py-1.5 rounded-md bg-gray-50 text-gray-700 hover:bg-gray-100 text-sm"
+                            disabled={isLoading || editingProjectId === project.id}
+                            onClick={() => { setEditingProjectId(project.id); setEditingProjectName(project.name); }}
+                          >
+                            Edit
+                          </button>
                           <button
                             className="px-3 py-1.5 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100 text-sm"
                             disabled={isLoading}

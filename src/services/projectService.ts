@@ -345,4 +345,16 @@ export class ProjectService {
       }
     } catch {}
   }
+
+  static async renameProject(projectId: string, newName: string): Promise<void> {
+    await ensureAnonymousAuth();
+    const uid = getAuth().currentUser?.uid;
+    if (!uid) throw new Error('Authentication required to rename projects.');
+    
+    const docRef = doc(db, PROJECTS_COLLECTION, projectId);
+    await updateDoc(docRef, {
+      name: newName.trim(),
+      updatedAt: Timestamp.fromDate(new Date()),
+    });
+  }
 }
