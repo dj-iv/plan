@@ -223,29 +223,32 @@ export class FloorService {
       updatedAt: Timestamp.fromDate(now),
       canvasState: flattenNestedPointArrays(payload.canvasState),
     };
+    // Use dot-notation for metadata sub-fields so setDoc merge:true does NOT
+    // replace the entire metadata map (which would wipe imageUrl / storagePath
+    // when only dimensions or thumbnails change).
     if (payload.canvasState?.originalImageWidth) {
-      patch.metadata = { ...(patch.metadata || {}), imageWidth: payload.canvasState.originalImageWidth };
+      patch['metadata.imageWidth'] = payload.canvasState.originalImageWidth;
     }
     if (payload.canvasState?.originalImageHeight) {
-      patch.metadata = { ...(patch.metadata || {}), imageHeight: payload.canvasState.originalImageHeight };
+      patch['metadata.imageHeight'] = payload.canvasState.originalImageHeight;
     }
     if (payload.name) {
       patch.name = payload.name;
     }
     if (originalFileName) {
-      patch.metadata = { ...(patch.metadata||{}), originalFileName };
+      patch['metadata.originalFileName'] = originalFileName;
     }
     if (typeof fileSize === 'number') {
-      patch.metadata = { ...(patch.metadata||{}), fileSize };
+      patch['metadata.fileSize'] = fileSize;
     }
     if (imageUrl) {
-      patch.metadata = { ...(patch.metadata||{}), imageUrl };
+      patch['metadata.imageUrl'] = imageUrl;
     }
     if (storagePath) {
-      patch.metadata = { ...(patch.metadata||{}), storagePath };
+      patch['metadata.storagePath'] = storagePath;
     }
     if (thumbnailUrl) {
-      patch.metadata = { ...(patch.metadata||{}), thumbnailUrl };
+      patch['metadata.thumbnailUrl'] = thumbnailUrl;
     }
     patch.sourcePlanType = payload.sourcePlanType ?? patch.sourcePlanType;
     if (payload.sourcePageWidthMm !== undefined) patch.sourcePageWidthMm = payload.sourcePageWidthMm;

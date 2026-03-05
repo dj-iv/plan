@@ -27,6 +27,7 @@ interface FloorplanCanvasProps {
   onFullscreenChange?: (isFs: boolean) => void;
   onTrimmedImage?: (croppedDataUrl: string, quad?: {x:number;y:number}[], confidence?: number) => void;
   onScaleDetected?: (unitsPerPixel: number, unit: string, method?: string, confidence?: number) => void;
+  onImageTransformed?: (dataUrl: string, imageFile: File) => void; // callback when image is cropped or rotated
   onReset?: () => void; // callback to reset and go back to upload screen
   onStateChange?: (state: any) => void; // notify parent for Save
   onSaveProject?: () => void; // callback to save current project
@@ -124,7 +125,7 @@ interface Snapshot {
   antennas: Antenna[];
   excludeCurrent: Point[];
   roi: {x:number;y:number;w:number;h:number} | null;
-  mode: 'select' | 'measure' | 'calibrate' | 'calibrate-area' | 'roi' | 'edit-poly' | 'exclude' | 'pick-hole' | 'edit-hole' | 'manual-exclude' | 'refine' | 'antenna';
+  mode: 'select' | 'measure' | 'calibrate' | 'calibrate-area' | 'roi' | 'edit-poly' | 'exclude' | 'pick-hole' | 'edit-hole' | 'manual-exclude' | 'refine' | 'antenna' | 'crop';
   manualRegions: Point[][];
   manualHoles: Point[][];
   manualResult: number | null;
@@ -155,6 +156,7 @@ export default function FloorplanCanvas({
   onFullscreenChange, 
   onTrimmedImage, 
   onScaleDetected, 
+  onImageTransformed,
   onReset, 
   onStateChange, 
   onSaveProject, 
@@ -205,7 +207,7 @@ export default function FloorplanCanvas({
   const [imageLoaded, setImageLoaded] = useState(false);
   const [currentArea, setCurrentArea] = useState<Point[]>([]);
   const [areas, setAreas] = useState<Area[]>([]);
-  const [mode, setMode] = useState<'select' | 'measure' | 'calibrate' | 'calibrate-area' | 'roi' | 'edit-poly' | 'exclude' | 'pick-hole' | 'edit-hole' | 'manual-exclude' | 'refine' | 'antenna'>('select');
+  const [mode, setMode] = useState<'select' | 'measure' | 'calibrate' | 'calibrate-area' | 'roi' | 'edit-poly' | 'exclude' | 'pick-hole' | 'edit-hole' | 'manual-exclude' | 'refine' | 'antenna' | 'crop'>('select');
   const [calibrationPoints, setCalibrationPoints] = useState<Point[]>([]);
   const [calibrationReal, setCalibrationReal] = useState<string>("");
   const [calibrationUnit, setCalibrationUnit] = useState<string>('meters');
@@ -315,6 +317,12 @@ export default function FloorplanCanvas({
   // Region of interest and perimeter detection
   const [roi, setRoi] = useState<{x:number;y:number;w:number;h:number}|null>(null);
   const roiDragRef = useRef<{x:number;y:number}|null>(null);
+  // Crop state
+  const [cropRect, setCropRect] = useState<{x:number;y:number;w:number;h:number}|null>(null);
+  const cropDragRef = useRef<{x:number;y:number}|null>(null);
+  // Rotation angle input for free-angle rotation
+  const [rotationAngle, setRotationAngle] = useState<number>(0);
+  const [showRotationUI, setShowRotationUI] = useState(false);
   const [perimeter, setPerimeter] = useState<Point[]|null>(null);
   const [perimeterRaw, setPerimeterRaw] = useState<Point[]|null>(null);
   const [holes, setHoles] = useState<Point[][]>([]);
@@ -757,6 +765,14 @@ export default function FloorplanCanvas({
       }
 
       setImageLoaded(false);
+
+      // For Firebase Storage URLs, proxy through our server-side route to
+      // avoid browser CORS restrictions and keep the canvas un-tainted.
+      let effectiveUrl = imageUrl;
+      if (imageUrl.includes('firebasestorage.googleapis.com') || imageUrl.includes('.firebasestorage.app')) {
+        effectiveUrl = `/api/proxy-image?url=${encodeURIComponent(imageUrl)}`;
+      }
+
       const img = new Image();
 
       img.onload = () => {
@@ -786,24 +802,10 @@ export default function FloorplanCanvas({
       };
       
       img.onerror = (error) => {
-        console.error('Failed to load image from URL:', imageUrl, 'Error:', error);
-        // Check if it's a Firebase Storage URL
+        console.error('Failed to load image from URL:', effectiveUrl, 'Error:', error);
+        // Check if it's a Firebase Storage URL that was proxied
         if (imageUrl.includes('firebasestorage.googleapis.com')) {
-          console.error('Firebase Storage URL failed. This might be a CORS or authentication issue.');
-          
-          // Try to fetch the URL directly to get more detailed error information
-          fetch(imageUrl)
-            .then(response => {
-              console.log('Direct fetch response:', response.status, response.statusText);
-              if (!response.ok) {
-                return response.text().then(text => {
-                  console.error('Fetch response body:', text);
-                });
-              }
-            })
-            .catch(fetchError => {
-              console.error('Direct fetch failed:', fetchError);
-            });
+          console.error('Firebase Storage URL failed (proxied). Original URL:', imageUrl);
         }
         // Don't clear an already-visible image; only prevent switching
         if (!image) {
@@ -812,12 +814,12 @@ export default function FloorplanCanvas({
         }
       };
       
-      // Add crossOrigin for Firebase Storage URLs
-      if (imageUrl.includes('firebasestorage.googleapis.com')) {
+      // Add crossOrigin for Firebase Storage URLs proxied through our API
+      if (effectiveUrl.startsWith('/api/proxy-image')) {
         img.crossOrigin = 'anonymous';
       }
       
-      img.src = imageUrl;
+      img.src = effectiveUrl;
     };
 
     loadImage();
@@ -923,7 +925,7 @@ export default function FloorplanCanvas({
       drawCanvas();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageLoaded, image, canvasSize, areas, currentArea, mode, calibrationPoints, calibrationAreaPoints, holes, excludeCurrent, autoHolesPreview, zoom, pan, roi, perimeter, antennas, previewAntennas, showCoverage, showRadiusBoundary, antennaRange, multiDeleteRect, antennaSelectRect, selectedAntennaIds, displayUnit]);
+  }, [imageLoaded, image, canvasSize, areas, currentArea, mode, calibrationPoints, calibrationAreaPoints, holes, excludeCurrent, autoHolesPreview, zoom, pan, roi, perimeter, antennas, previewAntennas, showCoverage, showRadiusBoundary, antennaRange, multiDeleteRect, antennaSelectRect, selectedAntennaIds, displayUnit, cropRect]);
 
   useEffect(() => {
     if (!imageLoaded || !image) return;
@@ -1355,6 +1357,55 @@ export default function FloorplanCanvas({
     ctx.restore();
   }
 
+  // Draw crop rectangle with dark mask over excluded area
+  if (cropRect && mode === 'crop') {
+    ctx.save();
+    // Dark overlay outside the crop area
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    // Top strip
+    ctx.fillRect(0, 0, canvasSize.width, cropRect.y);
+    // Bottom strip
+    ctx.fillRect(0, cropRect.y + cropRect.h, canvasSize.width, canvasSize.height - cropRect.y - cropRect.h);
+    // Left strip
+    ctx.fillRect(0, cropRect.y, cropRect.x, cropRect.h);
+    // Right strip
+    ctx.fillRect(cropRect.x + cropRect.w, cropRect.y, canvasSize.width - cropRect.x - cropRect.w, cropRect.h);
+    // Crop border
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2 / zoom;
+    ctx.setLineDash([]);
+    ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+    // Corner handles
+    const handleSize = 8 / zoom;
+    ctx.fillStyle = '#ffffff';
+    const corners = [
+      { x: cropRect.x, y: cropRect.y },
+      { x: cropRect.x + cropRect.w, y: cropRect.y },
+      { x: cropRect.x, y: cropRect.y + cropRect.h },
+      { x: cropRect.x + cropRect.w, y: cropRect.y + cropRect.h },
+    ];
+    for (const c of corners) {
+      ctx.fillRect(c.x - handleSize / 2, c.y - handleSize / 2, handleSize, handleSize);
+    }
+    // Dimension label
+    if (image && scale) {
+      const scaleX = image.width / canvasSize.width;
+      const scaleY = image.height / canvasSize.height;
+      const wMeters = cropRect.w * scaleX * scale;
+      const hMeters = cropRect.h * scaleY * scale;
+      const label = `${(wMeters).toFixed(1)} × ${(hMeters).toFixed(1)} m`;
+      ctx.font = `bold ${Math.max(11, 13 / zoom)}px ui-sans-serif, system-ui`;
+      const tw = ctx.measureText(label).width + 12;
+      const lx = cropRect.x + cropRect.w / 2 - tw / 2;
+      const ly = cropRect.y + cropRect.h + 6 / zoom;
+      ctx.fillStyle = 'rgba(0,0,0,0.75)';
+      ctx.fillRect(lx - 2, ly, tw + 4, 20 / zoom);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(label, lx + 4, ly + 15 / zoom);
+    }
+    ctx.restore();
+  }
+
   // Draw detected perimeter polygon
   if (perimeter && perimeter.length >= 3) {
     ctx.save();
@@ -1716,6 +1767,8 @@ export default function FloorplanCanvas({
   }, [scale, image, canvasSize.width, canvasSize.height]);
 
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    // Crop mode uses drag, not click
+    if (mode === 'crop') return;
     if (mustCalibrate && mode !== 'calibrate' && mode !== 'calibrate-area') {
   alert('Please calibrate first (Calibrate Distance or Calibrate Area).');
       setMode('calibrate');
@@ -2600,6 +2653,99 @@ export default function FloorplanCanvas({
     setMode('select');
   };
 
+  // Crop: apply crop to generate a new image and notify parent
+  const applyCrop = useCallback(() => {
+    if (!image || !cropRect || cropRect.w < 5 || cropRect.h < 5) {
+      alert('Please draw a crop area first.');
+      return;
+    }
+    // Convert canvas coords to image (natural) pixel coords
+    const scaleX = image.naturalWidth / canvasSize.width;
+    const scaleY = image.naturalHeight / canvasSize.height;
+    const sx = Math.max(0, Math.round(cropRect.x * scaleX));
+    const sy = Math.max(0, Math.round(cropRect.y * scaleY));
+    const sw = Math.min(image.naturalWidth - sx, Math.round(cropRect.w * scaleX));
+    const sh = Math.min(image.naturalHeight - sy, Math.round(cropRect.h * scaleY));
+    if (sw < 10 || sh < 10) { alert('Crop area too small.'); return; }
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width = sw;
+    offscreen.height = sh;
+    const ctx = offscreen.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
+    offscreen.toBlob((blob) => {
+      if (!blob) return;
+      const dataUrl = offscreen.toDataURL('image/png');
+      const file = new File([blob], 'cropped-floorplan.png', { type: 'image/png' });
+      // Clear all overlays since coordinates no longer match the cropped image
+      setAreas([]);
+      setCurrentArea([]);
+      setPerimeter(null);
+      setPerimeterRaw(null);
+      setHoles([]);
+      setExcludeCurrent([]);
+      setSavedAreas([]);
+      setSavedExclusions([]);
+      setAntennas([]);
+      setSelections([]);
+      setRoi(null);
+      setCropRect(null);
+      setCalibrationPoints([]);
+      setCalibrationAreaPoints([]);
+      setMode('select');
+      onImageTransformed?.(dataUrl, file);
+    }, 'image/png');
+  }, [image, cropRect, canvasSize, onImageTransformed]);
+
+  // Rotation: rotate image by given degrees (any angle) and notify parent
+  const applyRotation = useCallback((degrees: number) => {
+    if (!image) return;
+    const normalised = ((degrees % 360) + 360) % 360;
+    if (normalised === 0) return; // no-op
+    const rad = (degrees * Math.PI) / 180;
+    const nw = image.naturalWidth;
+    const nh = image.naturalHeight;
+    // Compute bounding box of rotated rectangle
+    const cosA = Math.abs(Math.cos(rad));
+    const sinA = Math.abs(Math.sin(rad));
+    const outW = Math.ceil(nw * cosA + nh * sinA);
+    const outH = Math.ceil(nw * sinA + nh * cosA);
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width = outW;
+    offscreen.height = outH;
+    const ctx = offscreen.getContext('2d');
+    if (!ctx) return;
+    ctx.translate(outW / 2, outH / 2);
+    ctx.rotate(rad);
+    ctx.drawImage(image, -nw / 2, -nh / 2, nw, nh);
+    offscreen.toBlob((blob) => {
+      if (!blob) return;
+      const dataUrl = offscreen.toDataURL('image/png');
+      const file = new File([blob], 'rotated-floorplan.png', { type: 'image/png' });
+      // Clear all overlays since coordinates no longer match
+      setAreas([]);
+      setCurrentArea([]);
+      setPerimeter(null);
+      setPerimeterRaw(null);
+      setHoles([]);
+      setExcludeCurrent([]);
+      setSavedAreas([]);
+      setSavedExclusions([]);
+      setAntennas([]);
+      setSelections([]);
+      setRoi(null);
+      setCropRect(null);
+      setCalibrationPoints([]);
+      setCalibrationAreaPoints([]);
+      setMode('select');
+      setShowRotationUI(false);
+      setRotationAngle(0);
+      onImageTransformed?.(dataUrl, file);
+    }, 'image/png');
+  }, [image, onImageTransformed]);
+
   useEffect(() => {
     if (!scale || !image) return;
     if (!isFinite(scale) || scale <= 0) return;
@@ -2883,6 +3029,18 @@ export default function FloorplanCanvas({
     // Defer ROI box creation until we have movement to avoid a quick flash
         return;
       }
+      // Crop mode: drag to draw crop rectangle
+      if (mode === 'crop') {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        let cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+        let cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+        const wx = (cx - pan.x) / zoom;
+        const wy = (cy - pan.y) / zoom;
+        cropDragRef.current = { x: wx, y: wy };
+        return;
+      }
       // left click handled by onClick
       return;
     }
@@ -3042,6 +3200,27 @@ export default function FloorplanCanvas({
       setRoi({ x, y, w, h });
   return;
     }
+    // Crop rectangle dragging
+    if (mode === 'crop' && cropDragRef.current) {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      let cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+      let cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+      const wx = (cx - pan.x) / zoom;
+      const wy = (cy - pan.y) / zoom;
+      const ax = cropDragRef.current.x;
+      const ay = cropDragRef.current.y;
+      // Clamp to canvas bounds
+      const clampedWx = Math.max(0, Math.min(canvasSize.width, wx));
+      const clampedWy = Math.max(0, Math.min(canvasSize.height, wy));
+      const x = Math.min(ax, clampedWx);
+      const y = Math.min(ay, clampedWy);
+      const w = Math.abs(clampedWx - ax);
+      const h = Math.abs(clampedWy - ay);
+      setCropRect({ x, y, w, h });
+      return;
+    }
     if (!isPanningRef.current || !lastMouseRef.current) return;
     const dx = e.clientX - lastMouseRef.current.x;
     const dy = e.clientY - lastMouseRef.current.y;
@@ -3094,6 +3273,7 @@ export default function FloorplanCanvas({
       runPerimeterDetection();
     }
     roiDragRef.current = null;
+    cropDragRef.current = null;
     isPanningRef.current = false; 
     setIsPanCursor(false); 
     lastPointerWorldRef.current = null;
@@ -3721,6 +3901,19 @@ export default function FloorplanCanvas({
     return () => { document.body.style.overflow = prev; };
   }, []);
 
+  // Convert the current HTMLImageElement to a data URL that can be sent to
+  // web workers.  Workers cannot fetch Firebase Storage URLs (CORS) so we
+  // always produce a fresh data URL from the bitmap.
+  function imageToDataUrl(img: HTMLImageElement): string {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth || img.width;
+    c.height = img.naturalHeight || img.height;
+    const ctx = c.getContext('2d');
+    if (!ctx) return imageUrl;
+    ctx.drawImage(img, 0, 0);
+    return c.toDataURL('image/png');
+  }
+
   // Detect perimeter via worker, optionally limited to ROI
   async function runPerimeterDetection() {
     if (mustCalibrate) { alert('Please calibrate first (Calibrate or Calibrate Area).'); setMode('calibrate'); return; }
@@ -3736,12 +3929,14 @@ export default function FloorplanCanvas({
         const sy = image.height / canvasSize.height;
         roiImg = { x: Math.round(roi.x * sx), y: Math.round(roi.y * sy), w: Math.round(roi.w * sx), h: Math.round(roi.h * sy) };
       }
+      // Always send a data URL so the worker can fetch it without CORS issues
+      const workerImageUrl = imageUrl.startsWith('data:') ? imageUrl : imageToDataUrl(image);
       const res = await new Promise<any>((resolve, reject) => {
         const w = new Worker('/workers/perimeter-opencv.js');
         const to = setTimeout(() => { try{w.terminate();}catch{}; reject(new Error('timeout')); }, 10000);
         w.onmessage = ev => { clearTimeout(to); try{w.terminate();}catch{}; resolve(ev.data); };
-        w.onerror = err => { clearTimeout(to); try{w.terminate();}catch{}; reject(err); };
-  w.postMessage({ imageUrl, roi: roiImg, timeoutMs: 8000 });
+        w.onerror = err => { clearTimeout(to); try{w.terminate();}catch{}; reject(new Error(err instanceof ErrorEvent ? err.message || 'Worker error' : String(err))); };
+  w.postMessage({ imageUrl: workerImageUrl, roi: roiImg, timeoutMs: 8000 });
       });
       if (res && res.ok && res.points?.length) {
         // Map image points to world coords
@@ -3796,12 +3991,14 @@ export default function FloorplanCanvas({
         { x: rx + rw, y: ry + rh },
         { x: rx, y: ry + rh }
       ];
+      // Always send a data URL so the worker can fetch it without CORS issues
+      const workerImageUrl = imageUrl.startsWith('data:') ? imageUrl : imageToDataUrl(image);
       const res:any = await new Promise((resolve, reject)=>{
         const w = new Worker('/workers/holes-opencv.js');
         const to = setTimeout(()=>{ try{w.terminate();}catch{}; reject(new Error('timeout')); }, 10000);
         w.onmessage = ev=>{ clearTimeout(to); try{w.terminate();}catch{}; resolve(ev.data); };
-        w.onerror = err=>{ clearTimeout(to); try{w.terminate();}catch{}; reject(err); };
-        w.postMessage({ imageUrl, perimeterPoints: polyImg, timeoutMs: 9000 });
+        w.onerror = err=>{ clearTimeout(to); try{w.terminate();}catch{}; reject(new Error(err instanceof ErrorEvent ? err.message || 'Worker error' : String(err))); };
+        w.postMessage({ imageUrl: workerImageUrl, perimeterPoints: polyImg, timeoutMs: 9000 });
       });
       if (res && res.ok && Array.isArray(res.holes) && res.holes.length) {
         const cx = canvasSize.width / image.width;
@@ -4298,6 +4495,47 @@ export default function FloorplanCanvas({
           >
             Redo
           </button>
+          {/* Image Transform: Crop & Rotate — disabled once area work has started */}
+          {(() => {
+            const hasWork = !!(perimeter || savedAreas.length || antennas.length || holes.length || selections.length);
+            return (
+          <div className={`flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white ${hasWork ? 'opacity-40' : ''}`}>
+            <span className="text-sm font-medium">Image</span>
+            <button type="button"
+              onClick={() => { if (mode === 'crop') { setCropRect(null); setMode('select'); } else { setCropRect(null); setMode('crop'); } }}
+              disabled={hasWork}
+              className={`px-3 py-1.5 rounded-md font-medium transition-all transform hover:scale-105 ${mode==='crop' ? 'bg-white text-purple-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'} disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100`}
+              title={hasWork ? 'Clear areas/antennas before cropping' : 'Crop the floorplan image'}
+            >
+              ✂️ Crop
+            </button>
+            <button type="button"
+              onClick={() => applyRotation(-90)}
+              disabled={hasWork}
+              className="px-3 py-1.5 rounded-md font-medium bg-white/20 text-white hover:bg-white/30 transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+              title={hasWork ? 'Clear areas/antennas before rotating' : 'Rotate 90° counter-clockwise'}
+            >
+              ↺
+            </button>
+            <button type="button"
+              onClick={() => applyRotation(90)}
+              disabled={hasWork}
+              className="px-3 py-1.5 rounded-md font-medium bg-white/20 text-white hover:bg-white/30 transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+              title={hasWork ? 'Clear areas/antennas before rotating' : 'Rotate 90° clockwise'}
+            >
+              ↻
+            </button>
+            <button type="button"
+              onClick={() => { setShowRotationUI(!showRotationUI); setRotationAngle(0); }}
+              disabled={hasWork}
+              className={`px-3 py-1.5 rounded-md font-medium transition-all transform hover:scale-105 ${showRotationUI ? 'bg-white text-purple-600 shadow-sm' : 'bg-white/20 text-white hover:bg-white/30'} disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100`}
+              title={hasWork ? 'Clear areas/antennas before rotating' : 'Rotate by custom angle'}
+            >
+              🔄 Rotate
+            </button>
+          </div>
+            );
+          })()}
           <button type="button"
             onClick={() => { if (mustCalibrate) { setMode('calibrate'); return; } setMode(mode==='pick-hole' ? 'select' : 'pick-hole'); setAutoHolesPreview([]); setAutoHolesIndex(-1); setRoi(null); }}
             disabled={mustCalibrate}
@@ -4696,6 +4934,76 @@ export default function FloorplanCanvas({
             🔧 Refine: Drag to move • Alt+click to delete • Alt+drag to box delete • Ctrl+click to add dots
           </div>
         )}
+
+        {/* Crop Mode Controls */}
+        {mode === 'crop' && (
+          <div className="flex items-center gap-3 px-3 py-2 bg-purple-500/20 text-white rounded-lg text-sm backdrop-blur-sm">
+            <span>✂️ <strong>Crop Mode:</strong> Draw a rectangle on the floorplan to select the area to keep.</span>
+            {cropRect && cropRect.w > 5 && cropRect.h > 5 && (
+              <button
+                type="button"
+                onClick={applyCrop}
+                className="px-4 py-1.5 bg-green-500 text-white rounded-lg font-medium hover:bg-green-600 transition-all"
+              >
+                Apply Crop
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => { setCropRect(null); setMode('select'); }}
+              className="px-4 py-1.5 bg-white/20 text-white rounded-lg font-medium hover:bg-white/30 transition-all"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {/* Rotation Angle Controls */}
+        {showRotationUI && (
+          <div className="flex items-center gap-3 px-3 py-2 bg-blue-500/20 text-white rounded-lg text-sm backdrop-blur-sm">
+            <span>🔄 <strong>Rotate:</strong></span>
+            <input
+              type="range"
+              min={-180}
+              max={180}
+              step={1}
+              value={rotationAngle}
+              onChange={(e) => setRotationAngle(Number(e.target.value))}
+              className="w-40 accent-blue-400"
+              title={`${rotationAngle}°`}
+            />
+            <input
+              type="number"
+              min={-360}
+              max={360}
+              step={1}
+              value={rotationAngle}
+              onChange={(e) => setRotationAngle(Number(e.target.value) || 0)}
+              className="w-16 px-2 py-1 rounded bg-white/20 text-white text-center text-sm [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            />
+            <span className="text-xs">°</span>
+            <button type="button" onClick={() => setRotationAngle(-90)} className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-xs font-medium transition-all">-90°</button>
+            <button type="button" onClick={() => setRotationAngle(-45)} className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-xs font-medium transition-all">-45°</button>
+            <button type="button" onClick={() => setRotationAngle(45)} className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-xs font-medium transition-all">45°</button>
+            <button type="button" onClick={() => setRotationAngle(90)} className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-xs font-medium transition-all">90°</button>
+            <button type="button" onClick={() => setRotationAngle(180)} className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-xs font-medium transition-all">180°</button>
+            <button
+              type="button"
+              onClick={() => applyRotation(rotationAngle)}
+              disabled={rotationAngle === 0}
+              className="px-4 py-1.5 bg-green-500 text-white rounded-lg font-medium hover:bg-green-600 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              onClick={() => { setShowRotationUI(false); setRotationAngle(0); }}
+              className="px-4 py-1.5 bg-white/20 text-white rounded-lg font-medium hover:bg-white/30 transition-all"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Canvas */}
@@ -4730,6 +5038,9 @@ export default function FloorplanCanvas({
                 width: canvasSize.width || undefined,
                 height: canvasSize.height || undefined,
                 maxWidth: '100%',
+                ...(showRotationUI && rotationAngle !== 0
+                  ? { transform: `rotate(${rotationAngle}deg)`, transition: 'transform 0.05s linear' }
+                  : {}),
               }}
             />
           </div>

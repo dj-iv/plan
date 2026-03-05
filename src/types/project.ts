@@ -95,7 +95,8 @@ export type CanvasState = {
     | 'edit-hole'
     | 'manual-exclude'
     | 'refine'
-    | 'antenna';
+    | 'antenna'
+    | 'crop';
   manualRegions?: Point[][];
   manualHoles?: Point[][];
   manualResult?: number | null;

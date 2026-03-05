@@ -1841,6 +1841,21 @@ export default function Home() {
           }}
           requestCalibrateToken={calibrateTick}
           onTrimmedImage={(cropped, _quad, conf)=>{ setImageUrl(cropped); setInfoMessage(`Trimmed frame (confidence ${Math.round((conf||0)*100)}%)`); }}
+          onImageTransformed={(dataUrl, imageFile) => {
+            setImageUrl(dataUrl);
+            setLoadedCanvasState(null); // Clear old state so stale dimensions don't interfere
+            if (currentFloorId) {
+              updateFloorEntry(currentFloorId, floor => ({
+                ...floor,
+                imageUrl: dataUrl,
+                imageFile,
+                dirty: true,
+                updatedAt: new Date(),
+              }));
+            }
+            setInfoMessage('Image updated');
+            setTimeout(() => setInfoMessage(null), 2000);
+          }}
           onScaleDetected={(s,u,_m,_c)=>{ 
             setScale(s); 
             setUnit(u); 
