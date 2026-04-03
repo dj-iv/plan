@@ -12,6 +12,17 @@ function getSecret(): string {
 const SESSION_COOKIE = 'uctel_plan_session'
 const SESSION_DURATION_SECONDS = 60 * 60 * 5 // 5 hours
 
+export interface SessionCookieData {
+  uid: string
+  email: string | null
+  displayName: string | null
+}
+
+export interface PortalIntegrationPayload extends SessionCookieData {
+  source: 'floorplan-integration'
+  exp: number
+}
+
 export function getPortalBaseUrl(): string {
   return process.env.NEXT_PUBLIC_PORTAL_URL || process.env.PORTAL_URL || 'http://localhost:3300'
 }
@@ -88,6 +99,37 @@ export function createSessionCookie(value: SessionValueInput) {
 
 export function getSessionCookieName() {
   return SESSION_COOKIE
+}
+
+export function decodeSessionCookie(value: string | undefined): SessionCookieData | null {
+  if (!value) {
+    return null
+  }
+
+  try {
+    const decoded = Buffer.from(value, 'base64url').toString('utf8')
+    const parsed = JSON.parse(decoded) as Partial<SessionCookieData>
+    if (!parsed || typeof parsed.uid !== 'string') {
+      return null
+    }
+    return {
+      uid: parsed.uid,
+      email: typeof parsed.email === 'string' ? parsed.email : null,
+      displayName: typeof parsed.displayName === 'string' ? parsed.displayName : null,
+    }
+  } catch {
+    return {
+      uid: value,
+      email: null,
+      displayName: null,
+    }
+  }
+}
+
+export function createPortalIntegrationToken(payload: PortalIntegrationPayload): string {
+  const data = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
+  const signature = crypto.createHmac('sha256', getSecret()).update(data).digest('base64url')
+  return `${data}.${signature}`
 }
 
 export function sanitizeRedirect(target: string | null | undefined, origin: string): string {

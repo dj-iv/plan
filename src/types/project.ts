@@ -51,6 +51,13 @@ export type ScaleMetadata = {
   capturedAtIso?: string;
 };
 
+export type FloorWorkflow = {
+  calibratedAtIso?: string | null;
+  cropCompletedAtIso?: string | null;
+  cropRequiredAfterCalibration?: boolean;
+  exportedAtIso?: string | null;
+};
+
 export type CanvasState = {
   // Core geometry/state
   antennas?: Antenna[];
@@ -105,6 +112,7 @@ export type CanvasState = {
   // Overlays persisted for context
   savedAreas?: Point[][];
   savedExclusions?: Point[][];
+  workflow?: FloorWorkflow | null;
 
   // View info (optional, helps restore view)
   zoom?: number;
@@ -156,6 +164,8 @@ export type FloorStatistics = {
 
 export type SaveProjectRequest = {
   name: string;
+  customerName?: string;
+  buildingName?: string;
   description?: string;
   canvasState: CanvasState;
   settings: ProjectSettings;
@@ -166,6 +176,8 @@ export type SaveProjectRequest = {
 export type ProjectData = {
   id: string;
   name: string;
+  customerName?: string;
+  buildingName?: string;
   description?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -190,6 +202,8 @@ export type ProjectData = {
 export type ProjectSummary = {
   id: string;
   name: string;
+  customerName?: string;
+  buildingName?: string;
   description?: string;
   createdAt: Date;
   updatedAt: Date;

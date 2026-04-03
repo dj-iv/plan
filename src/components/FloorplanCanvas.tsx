@@ -4,7 +4,7 @@ import SmartAutoPlaceButton from './SmartAutoPlaceButton';
 import FloorsPanel from './FloorsPanel';
 import useFixAutoPlaceButton from '@/hooks/useFixAutoPlaceButton';
 import { simpleAutoPlaceAntennas } from '@/utils/antennaUtils';
-import type { ScaleMetadata } from '@/types/project';
+import type { FloorWorkflow, ScaleMetadata } from '@/types/project';
 import type { FloorNameAiStatus } from '@/types/ai';
 // Placement logic provided by antennaUtils.simpleAutoPlaceAntennas
 // Trim now runs in a Web Worker at /workers/trim-opencv.js to avoid blocking UI
@@ -27,10 +27,14 @@ interface FloorplanCanvasProps {
   onFullscreenChange?: (isFs: boolean) => void;
   onTrimmedImage?: (croppedDataUrl: string, quad?: {x:number;y:number}[], confidence?: number) => void;
   onScaleDetected?: (unitsPerPixel: number, unit: string, method?: string, confidence?: number) => void;
-  onImageTransformed?: (dataUrl: string, imageFile: File) => void; // callback when image is cropped or rotated
+  onImageTransformed?: (dataUrl: string, imageFile: File, transformKind?: 'crop' | 'rotate') => void; // callback when image is cropped or rotated
   onReset?: () => void; // callback to reset and go back to upload screen
   onStateChange?: (state: any) => void; // notify parent for Save
   onSaveProject?: () => void; // callback to save current project
+  onCreateSurveyPortal?: () => void;
+  canCreateSurveyPortal?: boolean;
+  createSurveyPortalDisabledReason?: string | null;
+  isCreatingSurveyPortal?: boolean;
   loadedCanvasState?: any; // state to restore when loading a project
   isSaving?: boolean; // saving state for Save button UI
   justSaved?: boolean; // briefly show Saved ✓ after save completes
@@ -132,6 +136,7 @@ interface Snapshot {
   selections: SelectionEntry[];
   savedAreas: Point[][];
   savedExclusions: Point[][];
+  workflow: FloorWorkflow | null;
   zoom: number;
   pan: {x:number;y:number};
   canvasWidth: number;
@@ -160,6 +165,10 @@ export default function FloorplanCanvas({
   onReset, 
   onStateChange, 
   onSaveProject, 
+  onCreateSurveyPortal,
+  canCreateSurveyPortal = false,
+  createSurveyPortalDisabledReason,
+  isCreatingSurveyPortal = false,
   loadedCanvasState, 
   isSaving, 
   justSaved, 
@@ -223,6 +232,7 @@ export default function FloorplanCanvas({
   const suppressClickRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [scaleMetadata, setScaleMetadata] = useState<ScaleMetadata | null>(null);
+  const [workflow, setWorkflow] = useState<FloorWorkflow | null>(loadedCanvasState?.workflow ?? null);
   const ratioNumberFormatter = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
   const planMmPerPixelFromMetadata = useMemo(() => {
     const candidates: number[] = [];
@@ -1005,6 +1015,7 @@ export default function FloorplanCanvas({
       selections,
       savedAreas,
       savedExclusions,
+      workflow,
       zoom,
       pan,
       canvasWidth: canvasSize.width,
@@ -1017,7 +1028,7 @@ export default function FloorplanCanvas({
       savedForDeviceHeight: canvasSize.height,
     };
     try { onStateChange(currentState); } catch {}
-  }, [onStateChange, antennas, areas, scale, scaleUnit, scaleMetadata, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, autoHolesPreview, autoHolesIndex, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions, zoom, pan, canvasSize.width, canvasSize.height, image]);
+  }, [onStateChange, antennas, areas, scale, scaleUnit, scaleMetadata, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, perimeter, perimeterRaw, holes, objects, autoHolesPreview, autoHolesIndex, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions, workflow, zoom, pan, canvasSize.width, canvasSize.height, image]);
 
   useEffect(() => {
     if (canvasSize.width <= 0 || canvasSize.height <= 0) return;
@@ -2143,6 +2154,7 @@ export default function FloorplanCanvas({
       selections: selections.map(s => ({ ...s })),
       savedAreas: savedAreas.map(poly => poly.map(p=>({...p}))),
       savedExclusions: savedExclusions.map(poly => poly.map(p=>({...p}))),
+      workflow: workflow ? { ...workflow } : null,
       zoom,
       pan,
       canvasWidth: canvasSize.width,
@@ -2184,6 +2196,7 @@ export default function FloorplanCanvas({
       selections: selections.map(s => ({ ...s })),
       savedAreas: savedAreas.map(poly => poly.map(p=>({...p}))),
       savedExclusions: savedExclusions.map(poly => poly.map(p=>({...p}))),
+      workflow: workflow ? { ...workflow } : null,
       zoom,
       pan,
       canvasWidth: canvasSize.width,
@@ -2215,13 +2228,14 @@ export default function FloorplanCanvas({
     setSelections(last.selections);
     setSavedAreas(last.savedAreas);
     setSavedExclusions(last.savedExclusions);
+    setWorkflow(last.workflow || null);
   setScaleMetadata(last.scaleMetadata || null);
   };
 
   // Update undo ref when function changes
   useEffect(() => {
     undoRef.current = undo;
-  }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, scaleMetadata, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions]);
+  }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, scaleMetadata, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions, workflow]);
 
   const redo = () => {
     console.log('Redo function called');
@@ -2258,6 +2272,7 @@ export default function FloorplanCanvas({
       selections: selections.map(s => ({ ...s })),
       savedAreas: savedAreas.map(poly => poly.map(p=>({...p}))),
       savedExclusions: savedExclusions.map(poly => poly.map(p=>({...p}))),
+      workflow: workflow ? { ...workflow } : null,
       zoom,
       pan,
       canvasWidth: canvasSize.width,
@@ -2289,13 +2304,14 @@ export default function FloorplanCanvas({
     setSelections(next.selections);
     setSavedAreas(next.savedAreas);
     setSavedExclusions(next.savedExclusions);
+    setWorkflow(next.workflow || null);
   setScaleMetadata(next.scaleMetadata || null);
   };
 
   // Update redo ref when function changes
   useEffect(() => {
     redoRef.current = redo;
-  }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, scaleMetadata, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions]);
+  }, [areas, currentArea, calibrationPoints, calibrationAreaPoints, calibrationAreaReal, scaleMetadata, perimeter, perimeterRaw, holes, objects, justSavedObject, autoHolesPreview, autoHolesIndex, antennas, excludeCurrent, roi, mode, manualRegions, manualHoles, manualResult, selections, savedAreas, savedExclusions, workflow]);
 
   // Restore loaded canvas state with coordinate scaling
   useEffect(() => {
@@ -2515,6 +2531,7 @@ export default function FloorplanCanvas({
     if (loadedCanvasState.selections) setSelections(loadedCanvasState.selections);
   if (loadedCanvasState.savedAreas) setSavedAreas(scaleForCanvas(loadedCanvasState.savedAreas));
   if (loadedCanvasState.savedExclusions) setSavedExclusions(scaleForCanvas(loadedCanvasState.savedExclusions));
+    if (loadedCanvasState.workflow !== undefined) setWorkflow(loadedCanvasState.workflow ?? null);
 
     // Restore scale value for antenna circles and calibration
     const storedScale = typeof loadedCanvasState.scale === 'number' ? loadedCanvasState.scale : null;
@@ -2577,11 +2594,12 @@ export default function FloorplanCanvas({
 
   const applyCalibration = () => {
     const px = calibrationDistancePx();
-  const real = parseFloat(calibrationReal);
+    const real = parseFloat(calibrationReal);
     if (!px || !real || isNaN(real)) {
       alert('Select two points and enter a valid distance.');
       return;
     }
+    const capturedAtIso = new Date().toISOString();
     const unitFactor = unitToMetersFactor(calibrationUnit);
     const realMeters = real * unitFactor;
     const metersPerPixel = realMeters / px;
@@ -2594,14 +2612,21 @@ export default function FloorplanCanvas({
       canvasWidth: canvasSize.width,
       canvasHeight: canvasSize.height,
       unitLabel: calibrationUnit,
-      capturedAtIso: new Date().toISOString(),
+      capturedAtIso,
       ...(effectivePlanMmPerPixel ? { planMmPerPixel: effectivePlanMmPerPixel } : {}),
     });
+    setWorkflow(prev => ({
+      ...(prev ?? {}),
+      calibratedAtIso: capturedAtIso,
+      cropCompletedAtIso: null,
+      cropRequiredAfterCalibration: true,
+      exportedAtIso: null,
+    }));
     coverageDiagKeyRef.current = '';
     onCalibrate && onCalibrate(metersPerPixel, calibrationUnit);
     setCalibrationPoints([]);
     setCalibrationReal('');
-    setMode('select');
+    setMode('crop');
   };
 
   // Area of a polygon in image pixel coordinates based on current canvas size
@@ -2634,6 +2659,7 @@ export default function FloorplanCanvas({
     const realAreaMeters = realArea * unitFactor * unitFactor;
     const metersPerPixel = Math.sqrt(realAreaMeters / pxArea);
     if (!isFinite(metersPerPixel) || metersPerPixel <= 0) { alert('Failed to compute scale from area.'); return; }
+    const capturedAtIso = new Date().toISOString();
     setScaleMetadata({
       mode: 'area',
       pixelValue: pxArea,
@@ -2643,14 +2669,21 @@ export default function FloorplanCanvas({
       canvasWidth: canvasSize.width,
       canvasHeight: canvasSize.height,
       unitLabel: calibrationUnit,
-      capturedAtIso: new Date().toISOString(),
+      capturedAtIso,
       ...(effectivePlanMmPerPixel ? { planMmPerPixel: effectivePlanMmPerPixel } : {}),
     });
+    setWorkflow(prev => ({
+      ...(prev ?? {}),
+      calibratedAtIso: capturedAtIso,
+      cropCompletedAtIso: null,
+      cropRequiredAfterCalibration: true,
+      exportedAtIso: null,
+    }));
     coverageDiagKeyRef.current = '';
     onCalibrate && onCalibrate(metersPerPixel, calibrationUnit);
     setCalibrationAreaPoints([]);
     setCalibrationAreaReal('');
-    setMode('select');
+    setMode('crop');
   };
 
   // Crop: apply crop to generate a new image and notify parent
@@ -2676,6 +2709,7 @@ export default function FloorplanCanvas({
     ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
     offscreen.toBlob((blob) => {
       if (!blob) return;
+      const cropCompletedAtIso = new Date().toISOString();
       const dataUrl = offscreen.toDataURL('image/png');
       const file = new File([blob], 'cropped-floorplan.png', { type: 'image/png' });
       // Clear all overlays since coordinates no longer match the cropped image
@@ -2693,8 +2727,14 @@ export default function FloorplanCanvas({
       setCropRect(null);
       setCalibrationPoints([]);
       setCalibrationAreaPoints([]);
+      setWorkflow(prev => ({
+        ...(prev ?? {}),
+        cropCompletedAtIso,
+        cropRequiredAfterCalibration: false,
+        exportedAtIso: null,
+      }));
       setMode('select');
-      onImageTransformed?.(dataUrl, file);
+      onImageTransformed?.(dataUrl, file, 'crop');
     }, 'image/png');
   }, [image, cropRect, canvasSize, onImageTransformed]);
 
@@ -2742,7 +2782,7 @@ export default function FloorplanCanvas({
       setMode('select');
       setShowRotationUI(false);
       setRotationAngle(0);
-      onImageTransformed?.(dataUrl, file);
+      onImageTransformed?.(dataUrl, file, 'rotate');
     }, 'image/png');
   }, [image, onImageTransformed]);
 
@@ -4597,6 +4637,22 @@ export default function FloorplanCanvas({
                   title="Save current project"
                 >
                   {isSaving ? 'Saving…' : justSaved ? 'Saved ✓' : (isUpdate ? 'Update' : 'Save')}
+                </button>
+              )}
+              {onCreateSurveyPortal && (
+                <button type="button"
+                  onClick={onCreateSurveyPortal}
+                  disabled={isCreatingSurveyPortal || !canCreateSurveyPortal}
+                  className={`px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 shadow-sm ml-2 text-white ${
+                    isCreatingSurveyPortal
+                      ? 'bg-emerald-400 cursor-not-allowed'
+                      : canCreateSurveyPortal
+                        ? 'bg-emerald-600 hover:bg-emerald-700'
+                        : 'bg-emerald-300 cursor-not-allowed'
+                  }`}
+                  title={createSurveyPortalDisabledReason ?? 'Create the customer, building, and floors in the Survey Portal'}
+                >
+                  {isCreatingSurveyPortal ? 'Creating…' : 'Create Survey'}
                 </button>
               )}
               <button type="button"

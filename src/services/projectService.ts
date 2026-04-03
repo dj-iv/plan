@@ -169,6 +169,8 @@ export class ProjectService {
     const project = removeUndefinedValues({
       id: projectId,
       name: projectData.name,
+      customerName: projectData.customerName,
+      buildingName: projectData.buildingName,
       description: projectData.description || '',
       createdAt: Timestamp.fromDate(now),
       updatedAt: Timestamp.fromDate(now),
@@ -235,6 +237,8 @@ export class ProjectService {
       baseSummaries.push({
         id: d.id,
         name: data.name,
+        customerName: data.customerName,
+        buildingName: data.buildingName,
         description: data.description,
         createdAt,
         updatedAt,

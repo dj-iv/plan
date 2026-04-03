@@ -9,9 +9,13 @@ import FloorUpload from '@/components/FloorUpload';
 import ScaleControl from '@/components/ScaleControl';
 import FloorplanCanvas from '@/components/FloorplanCanvas';
 import NameProjectModal from '@/components/NameProjectModal';
+import CreateSurveyModal, {
+  type CreateSurveyModalSubmitPayload,
+  type PortalCustomerOption,
+} from '@/components/CreateSurveyModal';
 import { ProjectService } from '@/services/projectService';
 import { FloorService } from '@/services/floorService';
-import { CanvasState, ProjectSummary, FloorSummary, FloorData, FloorEntry, Units, ProjectEngineer } from '@/types/project';
+import { CanvasState, ProjectSummary, FloorSummary, FloorData, FloorEntry, Units, ProjectEngineer, FloorWorkflow } from '@/types/project';
 import { FloorNameAiStatus, FloorNameAiResponse } from '@/types/ai';
 import { captureCanvasThumbnail } from '@/utils/thumbnail';
 import { computeFloorStatistics, normaliseUnit } from '@/utils/floorStats';
@@ -20,6 +24,43 @@ import { storage } from '@/lib/firebase';
 
 const CSS_MM_PER_PX = 25.4 / 96;
 
+type FloorExportReadiness = {
+  floorId: string;
+  floorName: string;
+  calibrated: boolean;
+  cropped: boolean;
+  named: boolean;
+  ready: boolean;
+};
+
+type SurveyExportResponse = {
+  customer: { id: string; name: string };
+  building: { id: string; name: string; address: string };
+  floors: Array<{ id: string; name: string }>;
+  createdAtIso?: string;
+};
+
+function getWorkflow(canvasState: CanvasState | null | undefined): FloorWorkflow | null {
+  return canvasState?.workflow ?? null;
+}
+
+function hasFloorName(name: string | null | undefined): boolean {
+  return typeof name === 'string' && name.trim().length > 0;
+}
+
+function isCropComplete(workflow: FloorWorkflow | null): boolean {
+  if (!workflow?.cropCompletedAtIso) {
+    return false;
+  }
+  if (workflow.cropRequiredAfterCalibration) {
+    return false;
+  }
+  if (workflow.calibratedAtIso && workflow.cropCompletedAtIso < workflow.calibratedAtIso) {
+    return false;
+  }
+  return true;
+}
+
 declare global {
   interface WindowEventMap {
     'request-save': CustomEvent<void>;
@@ -27,6 +68,13 @@ declare global {
 }
 
 export default function Home() {
+  const buildProjectLabel = useCallback((customerName?: string | null, buildingName?: string | null): string => {
+    const customer = customerName?.trim() || '';
+    const building = buildingName?.trim() || '';
+    if (customer && building) return `${customer} - ${building}`;
+    return building || customer || 'Untitled Project';
+  }, []);
+
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [imageUrl, setImageUrl] = useState<string>("");
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
@@ -39,6 +87,8 @@ export default function Home() {
   const [justSaved, setJustSaved] = useState<boolean>(false);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [currentProjectName, setCurrentProjectName] = useState<string | null>(null);
+  const [currentCustomerName, setCurrentCustomerName] = useState<string>('');
+  const [currentBuildingName, setCurrentBuildingName] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loadedCanvasState, setLoadedCanvasState] = useState<CanvasState | null>(null);
@@ -59,6 +109,10 @@ export default function Home() {
   const [showLogo, setShowLogo] = useState<boolean>(true);
   const [floorNameAiStatuses, setFloorNameAiStatuses] = useState<Record<string, FloorNameAiStatus>>({});
   const autoFloorNameAttemptsRef = useRef<Set<string>>(new Set());
+  const [showCreateSurveyModal, setShowCreateSurveyModal] = useState<boolean>(false);
+  const [portalCustomers, setPortalCustomers] = useState<PortalCustomerOption[]>([]);
+  const [portalCustomersLoading, setPortalCustomersLoading] = useState<boolean>(false);
+  const [isCreatingSurveyPortalEntry, setIsCreatingSurveyPortalEntry] = useState<boolean>(false);
 
   const deriveEngineer = useCallback((input?: { displayName?: string | null; email?: string | null; uid?: string | null }): ProjectEngineer | null => {
     if (!input) return null;
@@ -313,6 +367,44 @@ export default function Home() {
     });
   }, []);
 
+  const blobToDataUrl = useCallback((blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+      reader.onerror = () => reject(reader.error || new Error('Failed to read blob'));
+      reader.readAsDataURL(blob);
+    });
+  }, []);
+
+  const resolveFloorImageDataUrl = useCallback(async (entry: FloorEntry): Promise<string> => {
+    if (entry.id === currentFloorId && typeof imageUrl === 'string' && imageUrl.startsWith('data:')) {
+      return imageUrl;
+    }
+    if (typeof entry.imageUrl === 'string' && entry.imageUrl.startsWith('data:')) {
+      return entry.imageUrl;
+    }
+    if (entry.imageFile) {
+      return fileToDataUrl(entry.imageFile);
+    }
+
+    const preferredUrl = entry.id === currentFloorId && imageUrl ? imageUrl : entry.imageUrl;
+    if (preferredUrl) {
+      const fetchUrl = (
+        preferredUrl.startsWith('http://') || preferredUrl.startsWith('https://')
+      )
+        ? `/api/proxy-image?url=${encodeURIComponent(preferredUrl)}`
+        : preferredUrl;
+      const response = await fetch(fetchUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download floor image for "${entry.name}".`);
+      }
+      const blob = await response.blob();
+      return blobToDataUrl(blob);
+    }
+
+    throw new Error(`Floor image is not available for "${entry.name}".`);
+  }, [blobToDataUrl, currentFloorId, fileToDataUrl, imageUrl]);
+
   const handleLogoLoadError = useCallback(() => {
     console.warn('UCtel logo missing, hiding image');
     setShowLogo(false);
@@ -330,6 +422,57 @@ export default function Home() {
     } catch {
       return String(Date.now());
     }
+  }, []);
+
+  const createTransformedCanvasState = useCallback((state: CanvasState | null, nextScale: number | null, nextUnit: string, transformKind: 'crop' | 'rotate'): CanvasState => {
+    const fallbackRange = typeof state?.antennaRange === 'number' && Number.isFinite(state.antennaRange)
+      ? state.antennaRange
+      : 7;
+    const nextWorkflow: FloorWorkflow = transformKind === 'crop'
+      ? {
+          ...(state?.workflow ?? {}),
+          cropCompletedAtIso: new Date().toISOString(),
+          cropRequiredAfterCalibration: false,
+          exportedAtIso: null,
+        }
+      : {
+          ...(state?.workflow ?? {}),
+          cropCompletedAtIso: null,
+          cropRequiredAfterCalibration: typeof nextScale === 'number' && Number.isFinite(nextScale) && nextScale > 0,
+          exportedAtIso: null,
+        };
+
+    return {
+      antennas: [],
+      areas: [],
+      scale: typeof nextScale === 'number' && Number.isFinite(nextScale) ? nextScale : null,
+      scaleUnit: normaliseUnit(nextUnit as Units),
+      scaleMetadata: null,
+      showCoverage: state?.showCoverage ?? true,
+      showRadiusBoundary: state?.showRadiusBoundary ?? true,
+      antennaRange: fallbackRange,
+      calibrationPoints: [],
+      calibrationAreaPoints: [],
+      calibrationAreaReal: null,
+      perimeter: null,
+      perimeterRaw: null,
+      holes: [],
+      objects: [],
+      autoHolesPreview: [],
+      autoHolesIndex: -1,
+      excludeCurrent: [],
+      roi: null,
+      mode: 'select',
+      manualRegions: [],
+      manualHoles: [],
+      manualResult: null,
+      selections: [],
+      savedAreas: [],
+      savedExclusions: [],
+      workflow: nextWorkflow,
+      zoom: 1,
+      pan: { x: 0, y: 0 },
+    };
   }, []);
 
   const toFloorEntry = useCallback((floor: FloorData): FloorEntry => {
@@ -394,6 +537,51 @@ export default function Home() {
       pulsingAntennas: entry.stats.pulsingAntennas,
     })),
   [floors]);
+
+  const floorExportReadiness = useMemo<FloorExportReadiness[]>(() => (
+    floors.map((entry) => {
+      const calibrated = typeof entry.scale === 'number'
+        ? Number.isFinite(entry.scale) && entry.scale > 0
+        : typeof entry.canvasState.scale === 'number' && Number.isFinite(entry.canvasState.scale) && entry.canvasState.scale > 0;
+      const cropped = isCropComplete(getWorkflow(entry.canvasState));
+      const named = hasFloorName(entry.name);
+      return {
+        floorId: entry.id,
+        floorName: entry.name,
+        calibrated,
+        cropped,
+        named,
+        ready: calibrated && cropped && named,
+      };
+    })
+  ), [floors]);
+
+  const canCreateSurveyPortalEntry = useMemo(() => (
+    floorExportReadiness.length > 0 && floorExportReadiness.every((item) => item.ready)
+  ), [floorExportReadiness]);
+
+  const createSurveyDisabledReason = useMemo(() => {
+    if (floorExportReadiness.length === 0) {
+      return 'Add at least one floor before creating a Survey Portal building.';
+    }
+
+    const uncalibrated = floorExportReadiness.find((item) => !item.calibrated);
+    if (uncalibrated) {
+      return `${uncalibrated.floorName || 'A floor'} still needs calibration.`;
+    }
+
+    const uncropped = floorExportReadiness.find((item) => !item.cropped);
+    if (uncropped) {
+      return `${uncropped.floorName || 'A floor'} still needs cropping after calibration.`;
+    }
+
+    const unnamed = floorExportReadiness.find((item) => !item.named);
+    if (unnamed) {
+      return 'Every floor needs a name before exporting to the Survey Portal.';
+    }
+
+    return null;
+  }, [floorExportReadiness]);
   // persist search/sort
   useEffect(() => {
     try {
@@ -470,6 +658,8 @@ export default function Home() {
 
     setCurrentProjectId(null);
     setCurrentProjectName(null);
+    setCurrentCustomerName('');
+    setCurrentBuildingName('');
     setScale(null);
     setInfoMessage(additions.length === 1 ? '1 floor staged for analysis' : `${additions.length} floors staged for analysis`);
     setTimeout(() => setInfoMessage(null), 3000);
@@ -489,6 +679,8 @@ export default function Home() {
     setLoadedCanvasState(null); // Clear loaded state
     setCurrentProjectId(null);
     setCurrentProjectName(null);
+    setCurrentCustomerName('');
+    setCurrentBuildingName('');
     setIsDirty(false);
     // Reset floor-related state
     setFloors([]);
@@ -534,6 +726,8 @@ export default function Home() {
           setShowProjectList(false);
           setCurrentProjectId(null);
           setCurrentProjectName(null);
+          setCurrentCustomerName('');
+          setCurrentBuildingName('');
         }
       });
     })();
@@ -1065,6 +1259,148 @@ export default function Home() {
     void handleDetectFloorName(floorId);
   }, [handleDetectFloorName]);
 
+  const getPortalAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    const headers: Record<string, string> = {};
+    const user = getCurrentUser();
+    if (user) {
+      try {
+        const token = await user.getIdToken();
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+      } catch (error) {
+        console.warn('Failed to resolve Firebase ID token for portal integration', error);
+      }
+    }
+    return headers;
+  }, []);
+
+  const loadPortalCustomers = useCallback(async () => {
+    setPortalCustomersLoading(true);
+    try {
+      const response = await fetch('/api/portal/customers', {
+        cache: 'no-store',
+        headers: await getPortalAuthHeaders(),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload.error === 'string' ? payload.error : 'Failed to load customers from the Survey Portal.');
+      }
+      const customers = Array.isArray(payload.customers) ? payload.customers as PortalCustomerOption[] : [];
+      setPortalCustomers(customers);
+    } catch (error) {
+      console.error('Failed to load portal customers', error);
+      setPortalCustomers([]);
+      const message = error instanceof Error ? error.message : 'Failed to load customers from the Survey Portal.';
+      setInfoMessage(message);
+      setTimeout(() => setInfoMessage(null), 3000);
+    } finally {
+      setPortalCustomersLoading(false);
+    }
+  }, [getPortalAuthHeaders]);
+
+  useEffect(() => {
+    if (!showCreateSurveyModal) {
+      return;
+    }
+    void loadPortalCustomers();
+  }, [showCreateSurveyModal, loadPortalCustomers]);
+
+  const handleOpenCreateSurveyModal = useCallback(() => {
+    if (!canCreateSurveyPortalEntry) {
+      if (createSurveyDisabledReason) {
+        setInfoMessage(createSurveyDisabledReason);
+        setTimeout(() => setInfoMessage(null), 3000);
+      }
+      return;
+    }
+
+    setShowCreateSurveyModal(true);
+  }, [canCreateSurveyPortalEntry, createSurveyDisabledReason]);
+
+  const handleCreateSurveyPortal = useCallback(async (payload: CreateSurveyModalSubmitPayload) => {
+    const floorNameMap = new Map(payload.floors.map((floor) => [floor.id, floor.name]));
+    setIsCreatingSurveyPortalEntry(true);
+
+    try {
+      const exportFloors = await Promise.all(payload.floors.map(async (floorDraft) => {
+        const entry = floors.find((floor) => floor.id === floorDraft.id);
+        if (!entry) {
+          throw new Error('A selected floor is no longer available. Reload the project and try again.');
+        }
+
+        return {
+          id: floorDraft.id,
+          name: floorDraft.name,
+          imageDataUrl: await resolveFloorImageDataUrl(entry),
+        };
+      }));
+
+      const response = await fetch('/api/portal/survey-export', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getPortalAuthHeaders()),
+        },
+        body: JSON.stringify({
+          customerId: payload.customerId,
+          customerName: payload.customerName,
+          buildingName: payload.buildingName,
+          address: payload.address,
+          floors: exportFloors,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof result.error === 'string' ? result.error : 'Failed to create the Survey Portal building.');
+      }
+
+      const exportedAtIso = typeof (result as SurveyExportResponse).createdAtIso === 'string'
+        ? (result as SurveyExportResponse).createdAtIso!
+        : new Date().toISOString();
+
+      setFloors((prev) => prev.map((entry) => {
+        const nextName = floorNameMap.get(entry.id) ?? entry.name;
+        const nextCanvasState = {
+          ...entry.canvasState,
+          workflow: {
+            ...(entry.canvasState.workflow ?? {}),
+            exportedAtIso,
+          },
+        } as CanvasState;
+        const stateHash = computeStateHash(nextCanvasState);
+        floorStateHashesRef.current.set(entry.id, stateHash);
+        return {
+          ...entry,
+          name: nextName,
+          canvasState: nextCanvasState,
+          dirty: entry.dirty || nextName !== entry.name,
+          updatedAt: new Date(),
+          stateHash,
+        };
+      }));
+
+      if (currentFloorId) {
+        const currentWorkflow = getWorkflow(canvasStateRef.current ?? currentFloorEntry?.canvasState ?? null);
+        canvasStateRef.current = {
+          ...(canvasStateRef.current ?? currentFloorEntry?.canvasState ?? {}),
+          workflow: {
+            ...(currentWorkflow ?? {}),
+            exportedAtIso,
+          },
+        } as CanvasState;
+      }
+
+      setShowCreateSurveyModal(false);
+      const responsePayload = result as SurveyExportResponse;
+      setInfoMessage(`Created "${responsePayload.building.name}" for ${responsePayload.customer.name} in the Survey Portal.`);
+      setTimeout(() => setInfoMessage(null), 3500);
+    } finally {
+      setIsCreatingSurveyPortalEntry(false);
+    }
+  }, [computeStateHash, currentFloorEntry, currentFloorId, floors, getPortalAuthHeaders, resolveFloorImageDataUrl]);
+
   useEffect(() => {
     const statuses = floorNameAiStatuses;
     const anyLoading = Object.values(statuses).some(status => status?.status === 'loading');
@@ -1151,16 +1487,17 @@ export default function Home() {
     console.log('[Save] showNameModal state changed:', showNameModal);
   }, [showNameModal]);
 
-  const handleSaveProject = useCallback(async (overrideName?: string) => {
+  const handleSaveProject = useCallback(async (projectDetails?: { customerName: string; buildingName: string }) => {
     if (isSaving) {
       console.log('[Save] already saving, skipping');
       return;
     }
 
-    const trimmedName = overrideName?.trim?.() || currentProjectName?.trim?.() || '';
-    if (!currentProjectId && !trimmedName) {
+    const resolvedCustomerName = projectDetails?.customerName?.trim() || currentCustomerName.trim();
+    const resolvedBuildingName = projectDetails?.buildingName?.trim() || currentBuildingName.trim();
+    if (!currentProjectId && (!resolvedCustomerName || !resolvedBuildingName)) {
       setShowNameModal(true);
-      setInfoMessage('Name your project to save');
+      setInfoMessage('Add the customer and building name to save');
       setTimeout(() => setInfoMessage(null), 2000);
       return;
     }
@@ -1170,7 +1507,7 @@ export default function Home() {
       return;
     }
 
-    const projectName = trimmedName || currentProjectName || floors[0]?.name || 'Untitled Project';
+    const projectName = buildProjectLabel(resolvedCustomerName, resolvedBuildingName);
     const unitSetting = normaliseUnit(unit as Units);
 
     const latestCanvasState = canvasStateRef.current;
@@ -1193,12 +1530,16 @@ export default function Home() {
       try {
         const savedProjectId = await ProjectService.saveProject({
           name: projectName,
+          customerName: resolvedCustomerName,
+          buildingName: resolvedBuildingName,
           description: '',
           canvasState: {},
           settings: { units: unitSetting, showRadiusBoundary: true },
         });
         setCurrentProjectId(savedProjectId);
         setCurrentProjectName(projectName);
+        setCurrentCustomerName(resolvedCustomerName);
+        setCurrentBuildingName(resolvedBuildingName);
 
         const newEntries: FloorEntry[] = [];
         const idMap: Record<string, string> = {};
@@ -1266,10 +1607,15 @@ export default function Home() {
     try {
       await ProjectService.saveProject({
         name: projectName,
+        customerName: resolvedCustomerName,
+        buildingName: resolvedBuildingName,
         description: '',
         canvasState: {},
         settings: { units: unitSetting, showRadiusBoundary: true },
       }, currentProjectId);
+      setCurrentProjectName(projectName);
+      setCurrentCustomerName(resolvedCustomerName);
+      setCurrentBuildingName(resolvedBuildingName);
 
       const updatedEntries: FloorEntry[] = [];
       const idMap: Record<string, string> = {};
@@ -1351,7 +1697,7 @@ export default function Home() {
     } finally {
       setIsSaving(false);
     }
-  }, [isSaving, currentProjectId, currentProjectName, floors, currentFloorId, unit, computeStateHash, loadProjects]);
+  }, [isSaving, currentProjectId, currentCustomerName, currentBuildingName, floors, currentFloorId, unit, computeStateHash, loadProjects, buildProjectLabel]);
 
   const handleLoadProject = useCallback(async (projectId: string) => {
     const currentEmail = getCurrentUser()?.email || authEmail;
@@ -1449,6 +1795,8 @@ export default function Home() {
   setUnit(projectData.settings.units || 'meters');
       setCurrentProjectId(projectData.id);
       setCurrentProjectName(projectData.name);
+      setCurrentCustomerName(projectData.customerName || '');
+      setCurrentBuildingName(projectData.buildingName || '');
       // reset dirty tracking to clean baseline
       lastSavedHashRef.current = computeStateHash(projectData.canvasState);
       setIsDirty(false);
@@ -1793,6 +2141,27 @@ export default function Home() {
               {isSaving ? 'Saving…' : justSaved ? 'Saved ✓' : currentProjectId ? (isDirty ? 'Update Project' : 'Up to date') : 'Save Project'}
             </button>
 
+            <button
+              onClick={handleOpenCreateSurveyModal}
+              disabled={isCreatingSurveyPortalEntry || !canCreateSurveyPortalEntry}
+              className={`w-full px-4 py-2 rounded-md text-white font-medium ${
+                isCreatingSurveyPortalEntry
+                  ? 'bg-emerald-400 cursor-not-allowed'
+                  : canCreateSurveyPortalEntry
+                    ? 'bg-emerald-600 hover:bg-emerald-700'
+                    : 'bg-emerald-300 cursor-not-allowed'
+              }`}
+              title={createSurveyDisabledReason ?? 'Create the customer, building, and floors in the Survey Portal'}
+            >
+              {isCreatingSurveyPortalEntry ? 'Creating…' : 'Create Survey'}
+            </button>
+
+            <p className="max-w-[240px] text-xs leading-5 text-slate-600">
+              {canCreateSurveyPortalEntry
+                ? 'Ready to create the customer, building, and floors in the Survey Portal.'
+                : createSurveyDisabledReason}
+            </p>
+
             {/* Inline popover removed; NameProjectModal below handles naming */}
           </div>
         </div>,
@@ -1829,6 +2198,8 @@ export default function Home() {
           onCalibrate={(s,u)=>{ 
             setScale(s); 
             setUnit(u); 
+            setInfoMessage('Calibration saved. Crop the floorplan to continue.');
+            setTimeout(() => setInfoMessage(null), 2500);
             if (currentFloorId) {
               updateFloorEntry(currentFloorId, floor => ({
                 ...floor,
@@ -1841,16 +2212,36 @@ export default function Home() {
           }}
           requestCalibrateToken={calibrateTick}
           onTrimmedImage={(cropped, _quad, conf)=>{ setImageUrl(cropped); setInfoMessage(`Trimmed frame (confidence ${Math.round((conf||0)*100)}%)`); }}
-          onImageTransformed={(dataUrl, imageFile) => {
+          onImageTransformed={(dataUrl, imageFile, transformKind) => {
+            const transformedCanvasState = createTransformedCanvasState(
+              canvasStateRef.current ?? currentFloorEntry?.canvasState ?? null,
+              scale,
+              unit,
+              transformKind === 'rotate' ? 'rotate' : 'crop',
+            );
+            const stateHash = computeStateHash(transformedCanvasState);
+            const { stats, units: inferredUnits } = computeFloorStatistics(transformedCanvasState);
+            const nextUnits = transformedCanvasState.scaleUnit
+              ? normaliseUnit(transformedCanvasState.scaleUnit as Units)
+              : inferredUnits || currentFloorEntry?.units || normaliseUnit(unit as Units);
+
             setImageUrl(dataUrl);
+            canvasStateRef.current = transformedCanvasState;
             setLoadedCanvasState(null); // Clear old state so stale dimensions don't interfere
             if (currentFloorId) {
+              floorStateHashesRef.current.set(currentFloorId, stateHash);
               updateFloorEntry(currentFloorId, floor => ({
                 ...floor,
                 imageUrl: dataUrl,
                 imageFile,
+                canvasState: transformedCanvasState,
+                stats,
+                scale: transformedCanvasState.scale ?? floor.scale,
+                units: nextUnits,
                 dirty: true,
+                loaded: true,
                 updatedAt: new Date(),
+                stateHash,
               }));
             }
             setInfoMessage('Image updated');
@@ -1915,6 +2306,10 @@ export default function Home() {
             setIsDirty(isDirtyNow); 
           }}
           onSaveProject={handleSaveProject}
+          onCreateSurveyPortal={handleOpenCreateSurveyModal}
+          canCreateSurveyPortal={canCreateSurveyPortalEntry}
+          createSurveyPortalDisabledReason={createSurveyDisabledReason}
+          isCreatingSurveyPortal={isCreatingSurveyPortalEntry}
           loadedCanvasState={loadedCanvasState}
           isSaving={isSaving}
           justSaved={justSaved}
@@ -1935,10 +2330,29 @@ export default function Home() {
       {/* Name modal for first save */}
       <NameProjectModal
         open={showNameModal}
-        defaultName={uploadedFile?.name?.replace(/\.[^.]+$/, '') || currentProjectName || 'Untitled Project'}
+        defaultCustomerName={currentCustomerName}
+        defaultBuildingName={currentBuildingName || uploadedFile?.name?.replace(/\.[^.]+$/, '') || currentProjectName || 'Untitled Project'}
         isSaving={isSaving}
         onCancel={() => setShowNameModal(false)}
-        onConfirm={(name) => { setShowNameModal(false); setCurrentProjectName(name); handleSaveProject(name); }}
+        onConfirm={(customerName, buildingName) => {
+          setShowNameModal(false);
+          setCurrentCustomerName(customerName);
+          setCurrentBuildingName(buildingName);
+          setCurrentProjectName(buildProjectLabel(customerName, buildingName));
+          handleSaveProject({ customerName, buildingName });
+        }}
+      />
+
+      <CreateSurveyModal
+        open={showCreateSurveyModal}
+        isSubmitting={isCreatingSurveyPortalEntry}
+        isLoadingCustomers={portalCustomersLoading}
+        customers={portalCustomers}
+        defaultCustomerName={currentCustomerName}
+        defaultBuildingName={currentBuildingName || currentProjectName || 'New Building'}
+        floors={floors.map((floor) => ({ id: floor.id, name: floor.name }))}
+        onCancel={() => setShowCreateSurveyModal(false)}
+        onSubmit={handleCreateSurveyPortal}
       />
 
       {/* Floor Upload Modal */}
