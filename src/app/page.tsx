@@ -24,6 +24,39 @@ import { storage } from '@/lib/firebase';
 
 const CSS_MM_PER_PX = 25.4 / 96;
 
+function extensionForMimeType(mimeType: string): string {
+  if (mimeType.includes('png')) return 'png';
+  if (mimeType.includes('webp')) return 'webp';
+  if (mimeType.includes('jpeg') || mimeType.includes('jpg')) return 'jpg';
+  return 'bin';
+}
+
+function sanitiseExportFileName(name: string): string {
+  const trimmed = name.trim().toLowerCase();
+  const cleaned = trimmed.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return cleaned || 'floorplan';
+}
+
+function dataUrlToFile(dataUrl: string, fileNameStem: string): File {
+  const match = /^data:(.+?);base64,(.+)$/.exec(dataUrl);
+  if (!match) {
+    throw new Error('Invalid floor image data.');
+  }
+
+  const mimeType = match[1];
+  const binary = window.atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new File(
+    [bytes],
+    `${sanitiseExportFileName(fileNameStem)}.${extensionForMimeType(mimeType)}`,
+    { type: mimeType },
+  );
+}
+
 type FloorExportReadiness = {
   floorId: string;
   floorName: string;
@@ -367,43 +400,42 @@ export default function Home() {
     });
   }, []);
 
-  const blobToDataUrl = useCallback((blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-      reader.onerror = () => reject(reader.error || new Error('Failed to read blob'));
-      reader.readAsDataURL(blob);
-    });
-  }, []);
-
-  const resolveFloorImageDataUrl = useCallback(async (entry: FloorEntry): Promise<string> => {
+  const resolveFloorImageFile = useCallback(async (entry: FloorEntry, floorName: string): Promise<File> => {
     if (entry.id === currentFloorId && typeof imageUrl === 'string' && imageUrl.startsWith('data:')) {
-      return imageUrl;
+      return dataUrlToFile(imageUrl, floorName);
     }
+
     if (typeof entry.imageUrl === 'string' && entry.imageUrl.startsWith('data:')) {
-      return entry.imageUrl;
+      return dataUrlToFile(entry.imageUrl, floorName);
     }
+
     if (entry.imageFile) {
-      return fileToDataUrl(entry.imageFile);
+      return entry.imageFile;
     }
 
     const preferredUrl = entry.id === currentFloorId && imageUrl ? imageUrl : entry.imageUrl;
-    if (preferredUrl) {
-      const fetchUrl = (
-        preferredUrl.startsWith('http://') || preferredUrl.startsWith('https://')
-      )
-        ? `/api/proxy-image?url=${encodeURIComponent(preferredUrl)}`
-        : preferredUrl;
-      const response = await fetch(fetchUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to download floor image for "${entry.name}".`);
-      }
-      const blob = await response.blob();
-      return blobToDataUrl(blob);
+    if (!preferredUrl) {
+      throw new Error(`Floor image is not available for "${entry.name}".`);
     }
 
-    throw new Error(`Floor image is not available for "${entry.name}".`);
-  }, [blobToDataUrl, currentFloorId, fileToDataUrl, imageUrl]);
+    const fetchUrl = (
+      preferredUrl.startsWith('http://') || preferredUrl.startsWith('https://')
+    )
+      ? `/api/proxy-image?url=${encodeURIComponent(preferredUrl)}`
+      : preferredUrl;
+    const response = await fetch(fetchUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to download floor image for "${entry.name}".`);
+    }
+
+    const blob = await response.blob();
+    const mimeType = blob.type || 'image/png';
+    return new File(
+      [blob],
+      `${sanitiseExportFileName(floorName)}.${extensionForMimeType(mimeType)}`,
+      { type: mimeType },
+    );
+  }, [currentFloorId, imageUrl]);
 
   const handleLogoLoadError = useCallback(() => {
     console.warn('UCtel logo missing, hiding image');
@@ -1323,41 +1355,59 @@ export default function Home() {
     setIsCreatingSurveyPortalEntry(true);
 
     try {
-      const exportFloors = await Promise.all(payload.floors.map(async (floorDraft) => {
-        const entry = floors.find((floor) => floor.id === floorDraft.id);
-        if (!entry) {
-          throw new Error('A selected floor is no longer available. Reload the project and try again.');
-        }
+      const requestBody = {
+        customerId: payload.customerId,
+        customerName: payload.customerName,
+        buildingName: payload.buildingName,
+        address: payload.address,
+        createOnly: true,
+      }
 
-        return {
-          id: floorDraft.id,
-          name: floorDraft.name,
-          imageDataUrl: await resolveFloorImageDataUrl(entry),
-        };
-      }));
-
-      const response = await fetch('/api/portal/survey-export', {
+      const createResponse = await fetch('/api/portal/survey-export', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(await getPortalAuthHeaders()),
         },
-        body: JSON.stringify({
-          customerId: payload.customerId,
-          customerName: payload.customerName,
-          buildingName: payload.buildingName,
-          address: payload.address,
-          floors: exportFloors,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(typeof result.error === 'string' ? result.error : 'Failed to create the Survey Portal building.');
+      const createResult = await createResponse.json().catch(() => ({}));
+      if (!createResponse.ok) {
+        throw new Error(typeof createResult.error === 'string' ? createResult.error : 'Failed to create the Survey Portal building.');
       }
 
-      const exportedAtIso = typeof (result as SurveyExportResponse).createdAtIso === 'string'
-        ? (result as SurveyExportResponse).createdAtIso!
+      const responsePayload = createResult as SurveyExportResponse;
+
+      for (const floorDraft of payload.floors) {
+        const entry = floors.find((floor) => floor.id === floorDraft.id);
+        if (!entry) {
+          throw new Error('A selected floor is no longer available. Reload the project and try again.');
+        }
+
+        const planFile = await resolveFloorImageFile(entry, floorDraft.name);
+        const formData = new FormData();
+        formData.append('customerId', responsePayload.customer.id);
+        formData.append('buildingId', responsePayload.building.id);
+        formData.append('floorName', floorDraft.name);
+        formData.append('plan', planFile, planFile.name);
+
+        const floorResponse = await fetch('/api/portal/survey-export', {
+          method: 'POST',
+          headers: await getPortalAuthHeaders(),
+          body: formData,
+        });
+
+        const floorResult = await floorResponse.json().catch(() => ({}));
+        if (!floorResponse.ok) {
+          throw new Error(typeof floorResult.error === 'string'
+            ? `${floorDraft.name}: ${floorResult.error}`
+            : `Failed to upload floor "${floorDraft.name}" to the Survey Portal.`);
+        }
+      }
+
+      const exportedAtIso = typeof responsePayload.createdAtIso === 'string'
+        ? responsePayload.createdAtIso
         : new Date().toISOString();
 
       setFloors((prev) => prev.map((entry) => {
@@ -1393,13 +1443,12 @@ export default function Home() {
       }
 
       setShowCreateSurveyModal(false);
-      const responsePayload = result as SurveyExportResponse;
       setInfoMessage(`Created "${responsePayload.building.name}" for ${responsePayload.customer.name} in the Survey Portal.`);
       setTimeout(() => setInfoMessage(null), 3500);
     } finally {
       setIsCreatingSurveyPortalEntry(false);
     }
-  }, [computeStateHash, currentFloorEntry, currentFloorId, floors, getPortalAuthHeaders, resolveFloorImageDataUrl]);
+  }, [computeStateHash, currentFloorEntry, currentFloorId, floors, getPortalAuthHeaders, resolveFloorImageFile]);
 
   useEffect(() => {
     const statuses = floorNameAiStatuses;
