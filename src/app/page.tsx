@@ -13,6 +13,7 @@ import CreateSurveyModal, {
   type CreateSurveyModalSubmitPayload,
   type PortalCustomerOption,
 } from '@/components/CreateSurveyModal';
+import SuccessModal from '@/components/SuccessModal';
 import { ProjectService } from '@/services/projectService';
 import { FloorService } from '@/services/floorService';
 import { CanvasState, ProjectSummary, FloorSummary, FloorData, FloorEntry, Units, ProjectEngineer, FloorWorkflow } from '@/types/project';
@@ -143,6 +144,7 @@ export default function Home() {
   const [floorNameAiStatuses, setFloorNameAiStatuses] = useState<Record<string, FloorNameAiStatus>>({});
   const autoFloorNameAttemptsRef = useRef<Set<string>>(new Set());
   const [showCreateSurveyModal, setShowCreateSurveyModal] = useState<boolean>(false);
+  const [surveyPortalSuccessMessage, setSurveyPortalSuccessMessage] = useState<string | null>(null);
   const [portalCustomers, setPortalCustomers] = useState<PortalCustomerOption[]>([]);
   const [portalCustomersLoading, setPortalCustomersLoading] = useState<boolean>(false);
   const [isCreatingSurveyPortalEntry, setIsCreatingSurveyPortalEntry] = useState<boolean>(false);
@@ -1443,7 +1445,9 @@ export default function Home() {
       }
 
       setShowCreateSurveyModal(false);
-      setInfoMessage(`Created "${responsePayload.building.name}" for ${responsePayload.customer.name} in the Survey Portal.`);
+      const successMessage = `Created "${responsePayload.building.name}" for ${responsePayload.customer.name} in the Survey Portal.`;
+      setSurveyPortalSuccessMessage(successMessage);
+      setInfoMessage(successMessage);
       setTimeout(() => setInfoMessage(null), 3500);
     } finally {
       setIsCreatingSurveyPortalEntry(false);
@@ -2402,6 +2406,13 @@ export default function Home() {
         floors={floors.map((floor) => ({ id: floor.id, name: floor.name }))}
         onCancel={() => setShowCreateSurveyModal(false)}
         onSubmit={handleCreateSurveyPortal}
+      />
+
+      <SuccessModal
+        open={Boolean(surveyPortalSuccessMessage)}
+        title="Survey Portal Site Created"
+        message={surveyPortalSuccessMessage ?? ''}
+        onClose={() => setSurveyPortalSuccessMessage(null)}
       />
 
       {/* Floor Upload Modal */}
