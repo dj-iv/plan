@@ -4,7 +4,7 @@ import { adminAuth } from '@/lib/firebaseAdmin'
 import {
   createPortalIntegrationToken,
   decodeSessionCookie,
-  getPortalBaseUrl,
+  getPortalApiBaseUrl,
   getSessionCookieName,
 } from '@/lib/portalAuth'
 
@@ -50,7 +50,7 @@ export async function GET(request: Request) {
       exp: Date.now() + 60_000,
     })
 
-    const upstreamUrl = new URL('/api/integrations/floorplan/customers', getPortalBaseUrl())
+    const upstreamUrl = new URL('/api/integrations/floorplan/customers', getPortalApiBaseUrl())
     const upstream = await fetch(upstreamUrl, {
       method: 'GET',
       headers: {

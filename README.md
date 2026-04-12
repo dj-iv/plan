@@ -180,7 +180,10 @@ NEXT_PUBLIC_ALLOWED_GOOGLE_DOMAINS=uctel.co.uk
 
 # UCtel portal integration
 PORTAL_SIGNING_SECRET=matching_secret_from_portal
-NEXT_PUBLIC_PORTAL_URL=https://portal.yourdomain.co.uk
+NEXT_PUBLIC_PORTAL_AUTH_URL=https://portal-auth.yourdomain.co.uk
+PORTAL_API_URL=https://portal-api.yourdomain.co.uk
+# Backward-compatible fallback when auth and API share one host:
+# NEXT_PUBLIC_PORTAL_URL=https://portal.yourdomain.co.uk
 # Optional: bypass portal redirect during local development only
 # PORTAL_DEV_BYPASS=1
 ```

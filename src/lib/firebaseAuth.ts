@@ -1,6 +1,10 @@
 import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, signInWithCustomToken, User } from 'firebase/auth';
 
-const PORTAL_BASE_URL = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.PORTAL_URL || 'http://localhost:3300';
+const PORTAL_AUTH_BASE_URL = process.env.NEXT_PUBLIC_PORTAL_AUTH_URL
+  || process.env.PORTAL_AUTH_URL
+  || process.env.NEXT_PUBLIC_PORTAL_URL
+  || process.env.PORTAL_URL
+  || 'http://localhost:3300';
 const PORTAL_APP_ID = 'floorplan';
 
 function resolveRedirectTarget(explicit?: string): string {
@@ -15,14 +19,14 @@ function resolveRedirectTarget(explicit?: string): string {
 
 function buildPortalLaunchUrl(redirectTarget: string): string {
   try {
-    const base = new URL(PORTAL_BASE_URL);
+    const base = new URL(PORTAL_AUTH_BASE_URL);
     const launchUrl = new URL(`/launch/${PORTAL_APP_ID}`, base);
     if (redirectTarget) {
       launchUrl.searchParams.set('redirect', redirectTarget);
     }
     return launchUrl.toString();
   } catch {
-    const trimmed = PORTAL_BASE_URL.endsWith('/') ? PORTAL_BASE_URL.slice(0, -1) : PORTAL_BASE_URL;
+    const trimmed = PORTAL_AUTH_BASE_URL.endsWith('/') ? PORTAL_AUTH_BASE_URL.slice(0, -1) : PORTAL_AUTH_BASE_URL;
     return redirectTarget
       ? `${trimmed}/launch/${PORTAL_APP_ID}?redirect=${encodeURIComponent(redirectTarget)}`
       : `${trimmed}/launch/${PORTAL_APP_ID}`;
@@ -31,7 +35,7 @@ function buildPortalLaunchUrl(redirectTarget: string): string {
 
 function buildPortalLogoutUrl(redirectTarget: string): string {
   try {
-    const base = new URL(PORTAL_BASE_URL);
+    const base = new URL(PORTAL_AUTH_BASE_URL);
     const logoutUrl = new URL('/login', base);
     if (redirectTarget) {
       logoutUrl.searchParams.set('redirect', redirectTarget);
@@ -39,7 +43,7 @@ function buildPortalLogoutUrl(redirectTarget: string): string {
     logoutUrl.searchParams.set('logout', '1');
     return logoutUrl.toString();
   } catch {
-    const trimmed = PORTAL_BASE_URL.endsWith('/') ? PORTAL_BASE_URL.slice(0, -1) : PORTAL_BASE_URL;
+    const trimmed = PORTAL_AUTH_BASE_URL.endsWith('/') ? PORTAL_AUTH_BASE_URL.slice(0, -1) : PORTAL_AUTH_BASE_URL;
     const redirectParam = redirectTarget ? `redirect=${encodeURIComponent(redirectTarget)}&` : '';
     return `${trimmed}/login?${redirectParam}logout=1`;
   }

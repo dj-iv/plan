@@ -2,7 +2,11 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { getSessionCookieName } from '@/lib/portalAuth'
 
-const PORTAL_URL = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.PORTAL_URL || 'http://localhost:3300'
+const PORTAL_AUTH_URL = process.env.NEXT_PUBLIC_PORTAL_AUTH_URL
+  || process.env.PORTAL_AUTH_URL
+  || process.env.NEXT_PUBLIC_PORTAL_URL
+  || process.env.PORTAL_URL
+  || 'http://localhost:3300'
 const PUBLIC_PATHS = ['/healthz', '/portal/callback']
 
 function isPublicPath(pathname: string) {
@@ -44,7 +48,7 @@ export function middleware(request: NextRequest) {
     return NextResponse.next()
   }
 
-  const portalLoginUrl = new URL('/login', PORTAL_URL)
+  const portalLoginUrl = new URL('/login', PORTAL_AUTH_URL)
   portalLoginUrl.searchParams.set('redirect', request.nextUrl.href)
   return NextResponse.redirect(portalLoginUrl)
 }

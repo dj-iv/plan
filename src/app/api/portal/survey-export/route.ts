@@ -4,7 +4,7 @@ import { adminAuth } from '@/lib/firebaseAdmin'
 import {
   createPortalIntegrationToken,
   decodeSessionCookie,
-  getPortalBaseUrl,
+  getPortalApiBaseUrl,
   getSessionCookieName,
 } from '@/lib/portalAuth'
 
@@ -77,7 +77,7 @@ export async function POST(request: Request) {
       upstreamBody = JSON.stringify(body)
     }
 
-    const upstreamUrl = new URL('/api/integrations/floorplan/import-building', getPortalBaseUrl())
+    const upstreamUrl = new URL('/api/integrations/floorplan/import-building', getPortalApiBaseUrl())
     const upstream = await fetch(upstreamUrl, {
       method: 'POST',
       headers: upstreamHeaders,

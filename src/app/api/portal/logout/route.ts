@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { buildPortalLogoutUrl, getPortalBaseUrl, getSessionCookieName, sanitizeRedirect } from '@/lib/portalAuth'
+import { buildPortalLogoutUrl, getPortalAuthBaseUrl, getSessionCookieName, sanitizeRedirect } from '@/lib/portalAuth'
 
 type SupportedMethod = 'GET' | 'POST'
 
@@ -23,7 +23,7 @@ async function resolveRedirect(request: Request, method: SupportedMethod): Promi
 
 function buildClearCookieHeader(): { name: string; value: string; options: { path: string; httpOnly: boolean; secure: boolean; sameSite: 'lax'; maxAge: number } } {
   const sessionCookieName = getSessionCookieName()
-  const portalUrl = getPortalBaseUrl()
+  const portalUrl = getPortalAuthBaseUrl()
   const secure = portalUrl ? portalUrl.startsWith('https://') : process.env.NODE_ENV === 'production'
 
   return {

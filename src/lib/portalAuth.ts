@@ -23,8 +23,24 @@ export interface PortalIntegrationPayload extends SessionCookieData {
   exp: number
 }
 
+export function getPortalAuthBaseUrl(): string {
+  return process.env.NEXT_PUBLIC_PORTAL_AUTH_URL
+    || process.env.PORTAL_AUTH_URL
+    || process.env.NEXT_PUBLIC_PORTAL_URL
+    || process.env.PORTAL_URL
+    || 'http://localhost:3300'
+}
+
+export function getPortalApiBaseUrl(): string {
+  return process.env.PORTAL_API_URL
+    || process.env.NEXT_PUBLIC_PORTAL_API_URL
+    || process.env.NEXT_PUBLIC_PORTAL_URL
+    || process.env.PORTAL_URL
+    || getPortalAuthBaseUrl()
+}
+
 export function getPortalBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_PORTAL_URL || process.env.PORTAL_URL || 'http://localhost:3300'
+  return getPortalAuthBaseUrl()
 }
 
 export interface PortalLaunchPayload {
@@ -82,7 +98,7 @@ function serialiseSessionPayload(value: SessionValueInput): string {
 }
 
 export function createSessionCookie(value: SessionValueInput) {
-  const portalUrl = getPortalBaseUrl()
+  const portalUrl = getPortalAuthBaseUrl()
   const secure = portalUrl ? portalUrl.startsWith('https://') : process.env.NODE_ENV === 'production'
   return {
     name: SESSION_COOKIE,
@@ -148,7 +164,7 @@ export function sanitizeRedirect(target: string | null | undefined, origin: stri
 }
 
 function buildPortalUrl(pathname: string, redirect: string | null | undefined, extraParams?: Record<string, string>) {
-  const base = getPortalBaseUrl()
+  const base = getPortalAuthBaseUrl()
   const url = new URL(pathname, base)
   if (redirect) {
     url.searchParams.set('redirect', redirect)
