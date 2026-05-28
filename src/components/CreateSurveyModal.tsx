@@ -54,6 +54,7 @@ export default function CreateSurveyModal({
   const [error, setError] = useState<string | null>(null);
   const customerInputRef = useRef<HTMLInputElement | null>(null);
   const wasOpenRef = useRef(false);
+  const autoMatchedCustomerRef = useRef(false);
 
   useEffect(() => {
     setMounted(true);
@@ -76,6 +77,7 @@ export default function CreateSurveyModal({
     setFloorDrafts(floors.map((floor) => ({ ...floor })));
     setError(null);
     setBackdropArmed(false);
+    autoMatchedCustomerRef.current = false;
 
     const armTimer = window.setTimeout(() => setBackdropArmed(true), 250);
     const focusTimer = window.setTimeout(() => customerInputRef.current?.focus(), 40);
@@ -101,6 +103,29 @@ export default function CreateSurveyModal({
       setCustomerName(selectedCustomer.name);
     }
   }, [customers, open, selectedCustomerId]);
+
+  useEffect(() => {
+    if (!open || autoMatchedCustomerRef.current || selectedCustomerId.length > 0 || customers.length === 0) {
+      return;
+    }
+
+    const normalizedCustomerName = customerName.trim().toLocaleLowerCase();
+    if (!normalizedCustomerName) {
+      autoMatchedCustomerRef.current = true;
+      return;
+    }
+
+    const matchedCustomer = customers.find(
+      (customer) => customer.name.trim().toLocaleLowerCase() === normalizedCustomerName,
+    );
+
+    if (matchedCustomer) {
+      setSelectedCustomerId(matchedCustomer.id);
+      setCustomerName(matchedCustomer.name);
+    }
+
+    autoMatchedCustomerRef.current = true;
+  }, [customerName, customers, open, selectedCustomerId]);
 
   const handleFloorNameChange = (floorId: string, nextName: string) => {
     setFloorDrafts((prev) => prev.map((floor) => (
