@@ -2471,17 +2471,25 @@ export default function FloorplanCanvas({
         ? (loadedCanvasState.antennas as PersistedAntenna[])
         : [];
 
-      const legacyAntennas = storedAntennas.some((antenna: PersistedAntenna) => {
-        const imageX = antenna.imageX ?? Number.NaN;
-        const imageY = antenna.imageY ?? Number.NaN;
-        return !Number.isFinite(imageX) || !Number.isFinite(imageY);
-      });
+      const mappedAntennas: PersistedAntenna[] = Array.isArray(loadedCanvasState.mappedAntennasForSave)
+        ? (loadedCanvasState.mappedAntennasForSave as PersistedAntenna[])
+        : [];
 
+      const hasValidImageCoordinates = (antennaList: PersistedAntenna[]) => (
+        antennaList.length > 0 && antennaList.every((antenna) => (
+          Number.isFinite(antenna.imageX ?? Number.NaN)
+          && Number.isFinite(antenna.imageY ?? Number.NaN)
+        ))
+      );
+
+      const persistedImageSpaceAntennas = hasValidImageCoordinates(mappedAntennas)
+        ? mappedAntennas
+        : (hasValidImageCoordinates(storedAntennas) ? storedAntennas : null);
+
+      const legacyAntennas = persistedImageSpaceAntennas === null;
       const antennasToUse: PersistedAntenna[] = legacyAntennas
         ? (scaleForCanvas(storedAntennas) as PersistedAntenna[])
-        : (Array.isArray(loadedCanvasState.mappedAntennasForSave)
-            ? (loadedCanvasState.mappedAntennasForSave as PersistedAntenna[])
-            : storedAntennas);
+        : persistedImageSpaceAntennas;
 
       const remappedAntennas = antennasToUse.map(antenna => {
         const imageX = Number.isFinite((antenna as any).imageX)
